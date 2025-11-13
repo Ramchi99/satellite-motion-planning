@@ -244,6 +244,9 @@ class SatellitePlanner:
             "B_minus_bar": cvx.Parameter((self.satellite.n_x, self.satellite.n_u, self.params.K - 1)),
             "F_bar": cvx.Parameter((self.satellite.n_x, self.satellite.n_p, self.params.K - 1)),
             "r_bar": cvx.Parameter((self.satellite.n_x, self.params.K - 1)),
+            "X_bar": cvx.Parameter((self.satellite.n_x, self.params.K)),
+            "U_bar": cvx.Parameter((self.satellite.n_u, self.params.K)),
+            "tr_radius": cvx.Parameter(1),
         }
 
         return problem_parameters
@@ -256,6 +259,7 @@ class SatellitePlanner:
         X = self.variables["X"]
         U = self.variables["U"]
         p = self.variables["p"]
+        K = self.params.K
 
         # Write parameters for better readability
         init_state = self.problem_parameters["init_state"]
@@ -265,6 +269,9 @@ class SatellitePlanner:
         B_minus_bar = self.problem_parameters["B_minus_bar"]
         F_bar = self.problem_parameters["F_bar"]
         r_bar = self.problem_parameters["r_bar"]
+        X_bar = self.problem_parameters["X_bar"]
+        U_bar = self.problem_parameters["U_bar"]
+        tr_radius = self.problem_parameters["tr_radius"]
 
         constraints = [
             #self.variables["X"][:, 0] == self.problem_parameters["init_state"],
@@ -273,10 +280,12 @@ class SatellitePlanner:
             p >= 0, # time has to be positive
             0 <= U, # control input has to be bigger/equal zero
             U <= self.sp.F_limits, # control input has to be smaller/equal F_limits
+            cvx.norm(X - X_bar) <= tr_radius, # State trust region
+            cvx.norm(U - U_bar) <= tr_radius, # Control trust region
         ]
 
         # these are the constraints for the linearized dynamics (next_state = Jacobians * current_state, inputs, time and a residual)
-        for k in range(self.params.K -1):
+        for k in range(K - 1):
             constraints.append(
                 X[:, k + 1]
                 == A_bar[:, :, k] @ X[:, k]
@@ -319,8 +328,17 @@ class SatellitePlanner:
 
         # HINT: be aware that the matrices returned by calculate_discretization are flattened in F order (this way affect your code later when you use them)
 
+        # Populate init_state / goal_state parameter using the first / last state of the current guess (correctness dependent on contraints)
         self.problem_parameters["init_state"].value = self.X_bar[:, 0]
-        # ...
+        self.problem_parameters["goal_state"].value = self.X_bar[:, -1]
+
+        # Populate dynamics parameters
+        self.problem_parameters["A_bar"].value = A_bar
+        self.problem_parameters["B_plus_bar"].value = B_plus_bar
+        self.problem_parameters["B_minus_bar"].value = B_minus_bar
+        self.problem_parameters["F_bar"].value = F_bar
+        self.problem_parameters["r_bar"].value = r_bar
+
 
     def _check_convergence(self) -> bool:
         """

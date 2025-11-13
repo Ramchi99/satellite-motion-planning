@@ -1,6 +1,7 @@
 import ast
 from dataclasses import dataclass, field
 from typing import Union
+from xml.sax.handler import feature_namespace_prefixes
 
 import cvxpy as cvx
 from dg_commons import PlayerName
@@ -251,10 +252,40 @@ class SatellitePlanner:
         """
         Define constraints for SCvx.
         """
+        # Write vaaraibles for better readability
+        X = self.variables["X"]
+        U = self.variables["U"]
+        p = self.variables["p"]
+
+        # Write parameters for better readability
+        init_state = self.problem_parameters["init_state"]
+        goal_state = self.problem_parameters["goal_state"]
+        A_bar = self.problem_parameters["A_bar"]
+        B_plus_bar = self.problem_parameters["B_plus_bar"]
+        B_minus_bar = self.problem_parameters["B_minus_bar"]
+        F_bar = self.problem_parameters["F_bar"]
+        r_bar = self.problem_parameters["r_bar"]
+
         constraints = [
-            self.variables["X"][:, 0] == self.problem_parameters["init_state"],
-            # ...
+            #self.variables["X"][:, 0] == self.problem_parameters["init_state"],
+            X[:, 0] == init_state, # first state has to be init_state
+            X[:, -1] == goal_state, # last state has to be goal_state
+            p >= 0, # time has to be positive
+            0 <= U, # control input has to be bigger/equal zero
+            U <= self.sp.F_limits, # control input has to be smaller/equal F_limits
         ]
+
+        # these are the constraints for the linearized dynamics (next_state = Jacobians * current_state, inputs, time and a residual)
+        for k in range(self.params.K -1):
+            constraints.append(
+                X[:, k + 1]
+                == A_bar[:, :, k] @ X[:, k]
+                + B_plus_bar[:, :, k] @ U[:, k + 1]
+                + B_minus_bar[:, :, k] @ U[:, k]
+                + F_bar[:, :, k] @ p
+                + r_bar[:, k]
+            )
+        
         return constraints
 
     def _get_objective(self) -> Union[cvx.Minimize, cvx.Maximize]:

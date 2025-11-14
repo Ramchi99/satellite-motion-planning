@@ -280,7 +280,8 @@ class SatellitePlanner:
             X[:, -1] == goal_state, # last state has to be goal_state
             p >= 0, # time has to be positive
             0 <= U, # control input has to be bigger/equal zero
-            U <= self.sp.F_limits, # control input has to be smaller/equal F_limits
+            # Reshape F_limits to a column vector (2, 1) to allow broadcasting against U (2, 50)
+            U <= np.array(self.sp.F_limits).reshape(-1, 1), # control input has to be smaller/equal F_limits
             cvx.norm(X - X_bar) <= tr_radius, # State trust region
             cvx.norm(U - U_bar) <= tr_radius, # Control trust region
         ]

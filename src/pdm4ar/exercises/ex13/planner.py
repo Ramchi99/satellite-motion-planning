@@ -236,13 +236,14 @@ class SatellitePlanner:
         """
         Define problem parameters for SCvx.
         """
+        # dim(cvx.Parameter) <= 2
         problem_parameters = {
             "init_state": cvx.Parameter(self.satellite.n_x),
             "goal_state": cvx.Parameter(self.satellite.n_x),
-            "A_bar": cvx.Parameter((self.satellite.n_x, self.satellite.n_x, self.params.K - 1)),
-            "B_plus_bar": cvx.Parameter((self.satellite.n_x, self.satellite.n_u, self.params.K - 1)),
-            "B_minus_bar": cvx.Parameter((self.satellite.n_x, self.satellite.n_u, self.params.K - 1)),
-            "F_bar": cvx.Parameter((self.satellite.n_x, self.satellite.n_p, self.params.K - 1)),
+            "A_bar": cvx.Parameter((self.satellite.n_x * self.satellite.n_x, self.params.K - 1)),
+            "B_plus_bar": cvx.Parameter((self.satellite.n_x * self.satellite.n_u, self.params.K - 1)),
+            "B_minus_bar": cvx.Parameter((self.satellite.n_x * self.satellite.n_u, self.params.K - 1)),
+            "F_bar": cvx.Parameter((self.satellite.n_x * self.satellite.n_p, self.params.K - 1)),
             "r_bar": cvx.Parameter((self.satellite.n_x, self.params.K - 1)),
             "X_bar": cvx.Parameter((self.satellite.n_x, self.params.K)),
             "U_bar": cvx.Parameter((self.satellite.n_u, self.params.K)),
@@ -286,12 +287,20 @@ class SatellitePlanner:
 
         # these are the constraints for the linearized dynamics (next_state = Jacobians * current_state, inputs, time and a residual)
         for k in range(K - 1):
+            # this reshaping is crucial 
+            # (from the calculate_discretization we get order "F" flattend matricies, we need to reshape them to then describe the dynamic constraints)
+            # also the dimension of csv.Paramter has to be <= 2.
+            A_bar_k = cvx.reshape(A_bar[:, k], (self.satellite.n_x, self.satellite.n_x), order="F")
+            B_plus_bar_k = cvx.reshape(B_plus_bar[:, k], (self.satellite.n_x, self.satellite.n_u), order="F")
+            B_minus_bar_k = cvx.reshape(B_minus_bar[:, k], (self.satellite.n_x, self.satellite.n_u), order="F")
+            F_bar_k = cvx.reshape(F_bar[:, k], (self.satellite.n_x, self.satellite.n_p), order="F")
+
             constraints.append(
                 X[:, k + 1]
-                == A_bar[:, :, k] @ X[:, k]
-                + B_plus_bar[:, :, k] @ U[:, k + 1]
-                + B_minus_bar[:, :, k] @ U[:, k]
-                + F_bar[:, :, k] @ p
+                == A_bar_k @ X[:, k]
+                + B_plus_bar_k @ U[:, k + 1]
+                + B_minus_bar_k @ U[:, k]
+                + F_bar_k @ p
                 + r_bar[:, k]
             )
         
@@ -321,16 +330,16 @@ class SatellitePlanner:
         """
         # ZOH
         # A_bar, B_bar, F_bar, r_bar = self.integrator.calculate_discretization(self.X_bar, self.U_bar, self.p_bar)
+
+        # The `calculate_discretization` call performs both linearization and discretization in one step.
+        # It evaluates the symbolic Jacobians (from SatelliteDyn) at each point along the current trajectory guess (X_bar, U_bar)
+        # and then integrates the resulting continuous-time linear system to produce the discrete-time matrices (A_bar, B_plus_bar, etc.).
         # FOH
         A_bar, B_plus_bar, B_minus_bar, F_bar, r_bar = self.integrator.calculate_discretization(
             self.X_bar, self.U_bar, self.p_bar
         )
 
         # HINT: be aware that the matrices returned by calculate_discretization are flattened in F order (this way affect your code later when you use them)
-        A_bar = A_bar.reshape((self.satellite.n_x, self.satellite.n_x, self.params.K - 1), order="F")
-        B_plus_bar = B_plus_bar.reshape((self.satellite.n_x, self.satellite.n_u, self.params.K - 1), order="F")
-        B_minus_bar = B_minus_bar.reshape((self.satellite.n_x, self.satellite.n_u, self.params.K - 1), order="F")
-        F_bar = F_bar.reshape((self.satellite.n_x, self.satellite.n_p, self.params.K - 1), order="F")
 
         # Populate init_state / goal_state parameter using the first / last state of the current guess (correctness dependent on contraints)
         self.problem_parameters["init_state"].value = self.X_bar[:, 0]

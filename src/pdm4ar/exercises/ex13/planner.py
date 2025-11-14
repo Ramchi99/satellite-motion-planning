@@ -247,7 +247,7 @@ class SatellitePlanner:
             "r_bar": cvx.Parameter((self.satellite.n_x, self.params.K - 1)),
             "X_bar": cvx.Parameter((self.satellite.n_x, self.params.K)),
             "U_bar": cvx.Parameter((self.satellite.n_u, self.params.K)),
-            "tr_radius": cvx.Parameter(1),
+            "tr_radius": cvx.Parameter(shape=(), nonneg=True), # the radius is only a scalar float (shape())
         }
 
         return problem_parameters

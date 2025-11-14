@@ -342,6 +342,8 @@ class SatellitePlanner:
 
         # HINT: be aware that the matrices returned by calculate_discretization are flattened in F order (this way affect your code later when you use them)
 
+        # All of these parameters need to be populated that the solver can check the constraints!
+
         # Populate init_state / goal_state parameter using the first / last state of the current guess (correctness dependent on contraints)
         self.problem_parameters["init_state"].value = self.X_bar[:, 0]
         self.problem_parameters["goal_state"].value = self.X_bar[:, -1]
@@ -352,6 +354,11 @@ class SatellitePlanner:
         self.problem_parameters["B_minus_bar"].value = B_minus_bar
         self.problem_parameters["F_bar"].value = F_bar
         self.problem_parameters["r_bar"].value = r_bar
+        
+        # Populate remaining parameters
+        self.problem_parameters["tr_radius"].value = self.params.tr_radius
+        self.problem_parameters["X_bar"].value = self.X_bar
+        self.problem_parameters["U_bar"].value = self.U_bar
 
 
     def _check_convergence(self) -> bool:

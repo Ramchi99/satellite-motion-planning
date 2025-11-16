@@ -150,6 +150,58 @@ class SatellitePlanner:
             update stopping criterion
         """
 
+        # Main SCvx iteration loop
+        for i in range(self.params.max_iterations):
+
+            # 1. Convexify the problem around the current guess (X_bar, U_bar)
+            self._convexification()
+
+            # 2. Solve the convex subproblem
+            try:
+                self.problem.solve(solver=self.params.solver, verbose=self.params.verbose_solver)
+            except cvx.SolverError:
+                # If the solver itself crashes, shrink the trust region and try again.
+                print(f"SolverError on iteration {i}: {self.params.solver} failed to solve the problem.")
+                self.params.tr_radius /= self.params.alpha
+                continue
+
+            # 3. Handle non-optimal solutions (e.g., infeasible)
+            if self.problem.status != "optimal":
+                # If the problem was not solved to optimality, the step is invalid.
+                # Shrink the trust region and try again.
+                print(f"Problem not optimal on iteration {i}: status is {self.problem.status}")
+                self.params.tr_radius /= self.params.alpha
+                continue
+
+            # 4. Check for convergence
+            if self._check_convergence():
+                # If the solution has stabilized, we are done.
+                print(f"Converged after {i+1} iterations.")
+                break
+
+            # 5. Update the trust region and decide whether to accept the step
+            accept_step = self._update_trust_region()
+
+            # 6. Update the trajectory guess (X_bar) for the next iteration
+            if accept_step:
+                # If the step was good, update our guess with the new solution.
+                self.X_bar = self.variables["X"].value
+                self.U_bar = self.variables["U"].value
+                self.p_bar = self.variables["p"].value
+            # else: If the step was rejected, we do nothing. The loop will repeat
+            # using the same X_bar but with the smaller trust region calculated
+            # in _update_trust_region.
+
+        else:
+            # This 'else' belongs to the 'for' loop. It runs only if the loop
+            # finishes without a 'break', meaning we ran out of iterations.
+            print("Warning: SCvx algorithm did not converge within the maximum number of iterations.")
+
+        # 7. Extract the final trajectory
+        # After the loop is finished, convert the final trajectory into the required format.
+        mycmds, mystates = self._extract_trajectory_from_arrays(self.X_bar, self.U_bar, self.p_bar)
+
+        """
         self._convexification()
         try:
             error = self.problem.solve(verbose=self.params.verbose_solver, solver=self.params.solver)
@@ -158,6 +210,7 @@ class SatellitePlanner:
 
         # Example data: sequence from array
         mycmds, mystates = self._extract_seq_from_array()
+        """
 
         return mycmds, mystates
 

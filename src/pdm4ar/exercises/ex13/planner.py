@@ -365,8 +365,18 @@ class SatellitePlanner:
         """
         Check convergence of SCvx.
         """
+        # I'm implementing the changing of cost improvement as a stopping criterion.
+        # But we can and should also try other stopping criterions (see slides of excercise)
 
-        pass
+        # Calculate the non-linear cost of the previous trajectory guess (J_old)
+        J_old = self.params.weight_p @ self.p_bar + self.params.weight_u * np.sum(self.U_bar**2)
+
+        # Get the predicted cost of the new solution from the linearized problem (L_new)
+        L_new = self.problem.value
+
+        # Check if the predicted improvement is less than or equal to the stopping criterion
+        predicted_improvement = J_old - L_new
+        return predicted_improvement <= self.params.stop_crit
 
     def _update_trust_region(self):
         """

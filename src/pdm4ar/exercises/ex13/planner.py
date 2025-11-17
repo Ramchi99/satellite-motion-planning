@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 from typing import Union
 from xml.sax.handler import feature_namespace_prefixes
 
+from click import clear
 import cvxpy as cvx
 from dg_commons import PlayerName
 from dg_commons.seq import DgSampledSequence
@@ -174,8 +175,34 @@ class SatellitePlanner:
                 self.params.tr_radius /= self.params.alpha
                 continue
 
-            # 4. Check for convergence
-            if self._check_convergence():
+            if self.problem.status == "optimal":
+                print(f"\n=== Iteration {i} ===")
+                print(f"Total objective: {self.problem.value:.6e}")
+                
+                # Break down which slack is the problem
+                nu_k = self.variables["nu_k"].value
+                # nu_tc = self.variables["nu_tc"].value
+                # nu_s_k = self.variables["nu_s_k"].value
+                
+                print(f"Slack breakdown:")
+                print(f"  nu_k (dynamics): {np.linalg.norm(nu_k):.6e}, max: {np.max(np.abs(nu_k)):.6e}")
+                # print(f"  nu_tc (terminal): {np.linalg.norm(nu_tc):.6e}, max: {np.max(np.abs(nu_tc)):.6e}")
+                # print(f"  nu_s_k (control): {np.linalg.norm(nu_s_k):.6e}, max: {np.max(np.abs(nu_s_k)):.6e}")
+                
+                # Check if we're at the boundaries
+                X_new = self.variables["X"].value
+                U_new = self.variables["U"].value
+                p_new = self.variables["p"].value
+                
+                print(f"Solution stats:")
+                print(f"  p (time): {p_new[0]:.4f}")
+                print(f"  U min/max: [{np.min(U_new):.4f}, {np.max(U_new):.4f}] (limits: [0, {self.sp.F_limits}])")
+                print(f"  X[:,0] error: {np.linalg.norm(X_new[:,0] - self.problem_parameters['init_state'].value):.6e}")
+                print(f"  X[:,-1] error: {np.linalg.norm(X_new[:,-1] - self.problem_parameters['goal_state'].value):.6e}")
+                print(f"  Trust region: {self.params.tr_radius:.4f}")
+
+            # 4. Check for convergence (after a grace period of a few iterations)
+            if i > 1 and self._check_convergence():
                 # If the solution has stabilized, we are done.
                 print(f"Converged after {i+1} iterations.")
                 break
@@ -200,6 +227,7 @@ class SatellitePlanner:
 
         # 7. Extract the final trajectory
         # After the loop is finished, convert the final trajectory into the required format.
+        print("X_bar: ", self.X_bar, "U_bar: ", self.U_bar, "p_bar: ", self.p_bar)
         mycmds, mystates = self._extract_trajectory_from_arrays(self.X_bar, self.U_bar, self.p_bar)
 
         """
@@ -256,7 +284,8 @@ class SatellitePlanner:
             X[:, i] = (1 - tau[i]) * x_init + tau[i] * x_goal
 
         # Control guess (small or zero inputs)
-        U = np.zeros((n_u, K))
+        # U = np.zeros((n_u, K))
+        U = np.ones((n_u, K)) * 0.1
 
         # Parameter guess (e.g., final time)
         p = np.array([10.0])
@@ -282,6 +311,12 @@ class SatellitePlanner:
             "X": cvx.Variable((self.satellite.n_x, self.params.K)),
             "U": cvx.Variable((self.satellite.n_u, self.params.K)),
             "p": cvx.Variable(self.satellite.n_p),
+
+            # Slack variables to evade infeasabililty (relax hard constraints, but high penalty of using "nu")
+            "nu_k": cvx.Variable((self.satellite.n_x, self.params.K - 1)), # Slack for dynamics (eq. 55b)
+            # "nu_s_k": cvx.Variable((self.satellite.n_u, self.params.K)), # Slack for path constraints (eq. 55d), e.g., control limits
+            # "nu_ic": cvx.Variable(self.satellite.n_x), # Slack for initial condition (eq. 55e)
+            # "nu_tc": cvx.Variable(self.satellite.n_x), # Slack for terminal condition (eq. 55f)
         }
 
         return variables
@@ -331,11 +366,14 @@ class SatellitePlanner:
         constraints = [
             #self.variables["X"][:, 0] == self.problem_parameters["init_state"],
             X[:, 0] == init_state, # first state has to be init_state
+            # X[:, -1] - goal_state == self.variables["nu_tc"], # last state has to be goal_state, or at least close to it!
             X[:, -1] == goal_state, # last state has to be goal_state
             p >= 0, # time has to be positive
             0 <= U, # control input has to be bigger/equal zero
             # Reshape F_limits to a column vector (2, 1) to allow broadcasting against U (2, 50)
-            U <= np.array(self.sp.F_limits).reshape(-1, 1), # control input has to be smaller/equal F_limits
+            U <= self.sp.F_limits[1], # control input has to be smaller/equal F_limits self.sp.F_limits[1] 
+            # U <= self.sp.F_limits[1] + self.variables["nu_s_k"],
+            # self.variables["nu_s_k"] >= 0, # Slack for control limits must be non-negative
             cvx.norm(X - X_bar) <= tr_radius, # State trust region
             cvx.norm(U - U_bar) <= tr_radius, # Control trust region
         ]
@@ -357,6 +395,7 @@ class SatellitePlanner:
                 + B_minus_bar_k @ U[:, k]
                 + F_bar_k @ p
                 + r_bar[:, k]
+                + self.variables["nu_k"][:, k]
             )
         
         return constraints
@@ -369,8 +408,15 @@ class SatellitePlanner:
         # objective = self.params.weight_p @ self.variables["p"]
 
         # This objective minimizes both for time (factor 10) and fuel (factor 1)
-        objective = self.params.weight_p @ self.variables["p"] + self.params.weight_u * cvx.sum_squares(
-            self.variables["U"]
+        # objective = self.params.weight_p @ self.variables["p"] + self.params.weight_u * cvx.sum_squares(
+        #     self.variables["U"]
+        # )
+        objective = (
+            self.params.weight_p @ self.variables["p"]
+            + self.params.weight_u * cvx.sum_squares(self.variables["U"])
+            + self.params.lambda_nu * cvx.norm(self.variables["nu_k"], 1)
+            # + self.params.lambda_nu * cvx.norm(self.variables["nu_tc"], 1)
+            # + self.params.lambda_nu * cvx.norm(self.variables["nu_s_k"], 1)
         )
 
         # We could also include in the cost function the distance of the path (minimize also for the distance)
@@ -398,9 +444,13 @@ class SatellitePlanner:
 
         # All of these parameters need to be populated that the solver can check the constraints!
 
-        # Populate init_state / goal_state parameter using the first / last state of the current guess (correctness dependent on contraints)
-        self.problem_parameters["init_state"].value = self.X_bar[:, 0]
-        self.problem_parameters["goal_state"].value = self.X_bar[:, -1]
+        # Populate init_state / goal_state parameter with the fixed problem boundaries
+        # self.problem_parameters["init_state"].value = self.X_bar[:, 0]
+        # self.problem_parameters["goal_state"].value = self.X_bar[:, -1]
+        x_init = np.array([self.init_state.x, self.init_state.y, self.init_state.psi, self.init_state.vx, self.init_state.vy, self.init_state.dpsi])
+        x_goal = np.array([self.goal_state.x, self.goal_state.y, self.goal_state.psi, self.goal_state.vx, self.goal_state.vy, self.goal_state.dpsi])
+        self.problem_parameters["init_state"].value = x_init
+        self.problem_parameters["goal_state"].value = x_goal
 
         # Populate dynamics parameters
         self.problem_parameters["A_bar"].value = A_bar
@@ -419,6 +469,7 @@ class SatellitePlanner:
         """
         Check convergence of SCvx.
         """
+        """
         # I'm implementing the changing of cost improvement as a stopping criterion.
         # But we can and should also try other stopping criterions (see slides of excercise)
 
@@ -431,6 +482,17 @@ class SatellitePlanner:
         # Check if the predicted improvement is less than or equal to the stopping criterion
         predicted_improvement = J_old - L_new
         return predicted_improvement <= self.params.stop_crit
+        """
+        nu_k_norm = np.linalg.norm(self.variables["nu_k"].value)
+        nu_tc_norm = np.linalg.norm(self.variables["nu_tc"].value)
+        nu_s_k_norm = np.linalg.norm(self.variables["nu_s_k"].value)
+        total_slack = nu_k_norm + nu_tc_norm + nu_s_k_norm
+        
+        converged = total_slack < self.params.stop_crit
+        print(f"  Total slack: {total_slack:.6e} (threshold: {self.params.stop_crit:.6e})")
+
+        return converged
+        
 
     def _update_trust_region(self) -> bool:
         """
@@ -452,6 +514,8 @@ class SatellitePlanner:
         # Calculate the actual and predicted improvement
         actual_improvement = J_old - J_new
         predicted_improvement = J_old - L_new
+
+        print("J_old", J_old, "J_new", J_new, "L_new", L_new, "actual imp", actual_improvement, "predict imp", predicted_improvement)
 
         # Avoid division by zero; if predicted improvement is not positive, the step is bad.
         if predicted_improvement <= 1e-4: # Use a small tolerance

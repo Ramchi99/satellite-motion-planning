@@ -349,14 +349,17 @@ class SatellitePlanner:
             X[:, 0] == init_state,  # first state has to be init_state
             # X[:, -1] - goal_state == self.variables["nu_tc"], # last state has to be goal_state, or at least close to it!
             X[:, -1] == goal_state,  # last state has to be goal_state
+
             p >= 0,  # time has to be positive
             300 >= p,
-            0 <= U,  # control input has to be bigger/equal zero
-            # Reshape F_limits to a column vector (2, 1) to allow broadcasting against U (2, 50)
+
+            self.sp.F_limits[0] <= U, # control input has to be bigger/equal F_limits self.sp.F_limits[0]
             U <= self.sp.F_limits[1],  # control input has to be smaller/equal F_limits self.sp.F_limits[1]
             # U <= self.sp.F_limits[1] + self.variables["nu_s_k"],
             # self.variables["nu_s_k"] >= 0, # Slack for control limits must be non-negative
-            cvx.norm(X - X_bar, "inf") <= tr_radius,  # State trust region
+
+            0.2 * cvx.norm(X - X_bar, "inf") + 0.2 * cvx.norm(U - U_bar, 'inf') + 0.6 * cvx.norm(p - p_bar, 'inf') <= tr_radius,
+            # cvx.norm(X - X_bar, "inf") <= tr_radius,  # State trust region
             # cvx.norm(U - U_bar, 'inf') <= tr_radius,  # Control trust region
             # cvx.norm(p - p_bar, 'inf') <= tr_radius,  # Time trust region
         ]

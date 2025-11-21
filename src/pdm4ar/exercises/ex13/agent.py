@@ -1,5 +1,7 @@
+import numpy as np
 from dataclasses import dataclass
 from typing import Sequence
+from decimal import Decimal
 
 from dg_commons import DgSampledSequence, PlayerName
 from dg_commons.sim import SimObservations, InitSimObservations
@@ -27,8 +29,14 @@ class MyAgentParams:
     """
     You can for example define some agent parameters.
     """
-
+    # --- Parameters for Simple L2 Norm Replanning ---
     my_tol: float = 0.1
+
+    # --- Parameters for Sophisticated Weighted Norm Replanning ---
+    pos_threshold: float = 0.1  # meters
+    vel_threshold: float = 0.2  # m/s
+    angle_threshold: float = 5.0 * np.pi / 180.0  # 2 degrees in radians
+    ang_vel_threshold: float = 5.0 * np.pi / 180.0 # 5 deg/s in radians
 
 
 class SatelliteAgent(Agent):
@@ -54,6 +62,8 @@ class SatelliteAgent(Agent):
     static_obstacles: Sequence[StaticObstacle]
     sg: SatelliteGeometry
     sp: SatelliteParameters
+    params: MyAgentParams # Declare params attribute
+    t_replan: float # Time of the last replan
 
     def __init__(
         self,
@@ -70,6 +80,8 @@ class SatelliteAgent(Agent):
         self.init_state = init_state
         self.planets = planets
         self.asteroids = asteroids
+        self.params = MyAgentParams() # Initialize MyAgentParams here
+        self.t_replan = Decimal('0.0') # The first plan starts at t=0
 
     def on_episode_init(self, init_sim_obs: InitSimObservations):
         """
@@ -117,20 +129,74 @@ class SatelliteAgent(Agent):
         """
         current_state = sim_obs.players[self.myname].state
         self.actual_trajectory.append(current_state)
-        expected_state = self.state_traj.at_interp(sim_obs.time)
+        # expected_state = self.state_traj.at_interp(sim_obs.time)
+
+        # Use relative time for trajectory lookup
+        relative_time = sim_obs.time - self.t_replan
+        expected_state = self.state_traj.at_interp(relative_time)
 
         # plotting the trajectory every 2.5 sec (this is optional, for better visualization)
         if Config.PLOT and int(10 * sim_obs.time) % 25 == 0:
             plot_traj(self.state_traj, self.actual_trajectory)
 
+        # --- CHOOSE REPLANNING STRATEGY ---
+
+        # --- Strategy 1: Simple L2 Norm (Euclidean Distance) ---
+        # UNCOMMENT THE BLOCK BELOW TO USE THIS STRATEGY
+        # # 1. Calculate deviation between current and expected state
+        # current_state_vec = np.array([current_state.x, current_state.y, current_state.psi, current_state.vx, current_state.vy, current_state.dpsi])
+        # expected_state_vec = np.array([expected_state.x, expected_state.y, expected_state.psi, expected_state.vx, expected_state.vy, expected_state.dpsi])
+        # deviation = np.linalg.norm(current_state_vec - expected_state_vec)
         #
-        # TODO: Implement scheme to replan
-        #
+        # # 2. Check if deviation exceeds the threshold
+        # if deviation > self.params.my_tol:
+        #     print(f"Replanning at time {sim_obs.time:.2f} s due to deviation of {deviation:.3f} m (threshold: {self.params.my_tol:.3f})")
+        #     self.cmds_plan, self.state_traj = self.planner.compute_trajectory(current_state, self.goal_state)
+        #     self.t_replan = sim_obs.time
+        #     relative_time = 0.0
+
+        # --- Strategy 2: Sophisticated Weighted Infinity Norm (Recommended) ---
+        # COMMENT OUT THE BLOCK BELOW IF YOU USE STRATEGY 1
+        # 1. Calculate deviation using a weighted infinity norm.
+        current_state_vec = np.array([current_state.x, current_state.y, current_state.psi, current_state.vx, current_state.vy, current_state.dpsi])
+        expected_state_vec = np.array([expected_state.x, expected_state.y, expected_state.psi, expected_state.vx, expected_state.vy, expected_state.dpsi])
+        
+        error_vec = current_state_vec - expected_state_vec
+        
+        # IMPORTANT: Correctly handle angle wrap-around for psi (error is in [-pi, pi])
+        error_vec[2] = (error_vec[2] + np.pi) % (2 * np.pi) - np.pi
+
+        # Define the vector of thresholds from our params
+        thresholds = np.array([
+            self.params.pos_threshold, self.params.pos_threshold,
+            self.params.angle_threshold,
+            self.params.vel_threshold, self.params.vel_threshold,
+            self.params.ang_vel_threshold
+        ])
+
+        # Normalize each error component by its threshold
+        normalized_errors = np.abs(error_vec) / thresholds
+
+        # The deviation metric is the maximum of the normalized errors (this is the infinity norm)
+        deviation_metric = np.max(normalized_errors)
+
+        # 2. Check if the unitless deviation metric exceeds 1.0
+        if deviation_metric > 1.0:
+            print(f"Replanning at time {sim_obs.time:.2f} s. Deviation metric: {deviation_metric:.3f} > 1.0")
+            # 3. Re-compute trajectory from the current state
+            self.cmds_plan, self.state_traj = self.planner.compute_trajectory(current_state, self.goal_state)
+            
+            # Update replan time and reset relative time for this step
+            self.t_replan = sim_obs.time
+            relative_time = 0.0 # The new plan starts now, so we are at its t=0
+        # --- End of Replanning Implementation ---
 
         # ZeroOrderHold
         # cmds = self.cmds_plan.at_or_previous(sim_obs.time)
         # FirstOrderHold
-        cmds = self.cmds_plan.at_interp(sim_obs.time)
+        # cmds = self.cmds_plan.at_interp(sim_obs.time)
+        # Use relative time for command lookup
+        cmds = self.cmds_plan.at_interp(relative_time)
 
         return cmds
 

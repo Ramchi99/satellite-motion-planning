@@ -50,6 +50,7 @@ class SolverParameters:
     K: int = 50  # number of discretization steps
     N_sub: int = 5  # used inside ode solver inside discretization
     stop_crit: float = 1e-5  # Stopping criteria constant
+    relative_stop_crit: float = 1e-2  # Stopping criteria for relative cost improvement
 
 
 class SatellitePlanner:
@@ -132,6 +133,11 @@ class SatellitePlanner:
         """
         Compute a trajectory from init_state to goal_state.
         """
+        # --- FIX: Reset trust region radius for each new planning request ---
+        # The trust region shrinks during convergence. If we don't reset it for a new plan,
+        # the solver starts with an overly restrictive search space, leading to numerical issues.
+        self.params.tr_radius = 5.0  # Reset to initial default value
+
         self.init_state = init_state
         self.goal_state = goal_state
         self.X_bar, self.U_bar, self.p_bar = self.initial_guess()
@@ -499,6 +505,7 @@ class SatellitePlanner:
         predicted_improvement = J_old - L_new
         return predicted_improvement <= self.params.stop_crit
         """
+        """
         nu_k_norm = np.linalg.norm(self.variables["nu_k"].value)
         # nu_tc_norm = np.linalg.norm(self.variables["nu_tc"].value)
         # nu_s_k_norm = np.linalg.norm(self.variables["nu_s_k"].value)
@@ -508,7 +515,43 @@ class SatellitePlanner:
         converged = total_slack < self.params.stop_crit
         print(f"  Total slack: {total_slack:.6e} (threshold: {self.params.stop_crit:.6e})")
 
-        return converged
+        # return converged
+        """
+
+        # Criterion 1: Trajectory change
+        X_star = self.variables["X"].value
+        p_star = self.variables["p"].value
+
+        # Calculate change in p
+        p_change = np.linalg.norm(p_star - self.p_bar) # L2 norm for scalar p
+
+        # Calculate max_k(||xk - xk_bar||)
+        max_x_change = 0.0
+        for k in range(self.params.K):
+            current_x_change = np.linalg.norm(X_star[:, k] - self.X_bar[:, k]) # L2 norm for state vector at time k
+            max_x_change = max(max_x_change, current_x_change)
+
+        trajectory_change = p_change + max_x_change
+        converged_by_trajectory = trajectory_change < self.params.stop_crit
+
+        print(f"  Trajectory change: {trajectory_change:.6e} (threshold: {self.params.stop_crit:.6e})")
+
+        # Criterion 2: Relative predicted cost improvement
+        merit_old = self._calculate_nonlinear_merit(self.X_bar, self.U_bar, self.p_bar)
+        L_new = self.problem.value
+
+        predicted_improvement = merit_old - L_new
+
+        # Avoid division by zero or negative merit
+        if merit_old > 1e-6:
+            relative_improvement = predicted_improvement / merit_old
+            converged_by_cost = relative_improvement < self.params.relative_stop_crit
+            print(f"  Relative predicted improvement: {relative_improvement.item():.6e} (threshold: {self.params.relative_stop_crit:.6e})")
+        else:
+            converged_by_cost = False
+            print(f"  Relative predicted improvement: N/A (merit_old is too small)")
+            
+        return converged_by_trajectory or converged_by_cost
 
     def _calculate_nonlinear_merit(self, X: NDArray, U: NDArray, p: NDArray) -> float:
         """
@@ -516,7 +559,7 @@ class SatellitePlanner:
         as described in the SCvx paper (Fig. 15).  ---  𝛿_k = x_{k+1} - 𝜓(⋅)  ---
         """
         # J(cost): Time and fuel objective
-        cost = self.params.weight_p @ p + self.params.weight_u * np.sum(U**2)
+        cost = (self.params.weight_p @ p).item() + self.params.weight_u * np.sum(U**2)
 
         # Simulate the nonlinear dynamics piecewise, starting from each X[:,k]
         # This gives us X_nl_piecewise[:, k+1] = phi(X[:, k], U[:, k], U[:, k+1], p)

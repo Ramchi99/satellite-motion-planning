@@ -16,6 +16,9 @@ from pdm4ar.exercises.ex13.planner import SatellitePlanner
 from pdm4ar.exercises_def.ex13.goal import SpaceshipTarget, DockingTarget
 from pdm4ar.exercises_def.ex13.utils_params import PlanetParams, AsteroidParams
 from pdm4ar.exercises_def.ex13.utils_plot import plot_traj
+import matplotlib.pyplot as plt
+import os
+from pdm4ar.exercises_def.structures import out_dir
 
 
 # HINT: as a good practice we suggest to use the config class to centralise activation of the debugging options
@@ -82,6 +85,9 @@ class SatelliteAgent(Agent):
         self.asteroids = asteroids
         self.params = MyAgentParams() # Initialize MyAgentParams here
         self.t_replan = Decimal('0.0') # The first plan starts at t=0
+        self.final_replan_done = False
+        self.error_history = []
+        self.time_history = []
 
     def on_episode_init(self, init_sim_obs: InitSimObservations):
         """
@@ -95,11 +101,13 @@ class SatelliteAgent(Agent):
         self.myname = init_sim_obs.my_name
         self.sg = init_sim_obs.model_geometry
         self.sp = init_sim_obs.model_params
-        self.planner = SatellitePlanner(planets=self.planets, asteroids=self.asteroids, sg=self.sg, sp=self.sp)
+        # self.planner = SatellitePlanner(planets=self.planets, asteroids=self.asteroids, sg=self.sg, sp=self.sp)
+        self.planner = SatellitePlanner(planets=self.planets, asteroids=self.asteroids, sg=self.sg, sp=self.sp, goal=init_sim_obs.goal) 
         assert isinstance(init_sim_obs.goal, SpaceshipTarget | DockingTarget)
         # make sure you consider both types of goals accordingly
         # (Docking is a subclass of SpaceshipTarget and may require special handling
         # to take into account the docking structure)
+        self.goal = init_sim_obs.goal
         self.goal_state = init_sim_obs.goal.target
 
         # Plot docking station (this is optional, for better visualization)
@@ -112,6 +120,34 @@ class SatelliteAgent(Agent):
         #
 
         self.cmds_plan, self.state_traj = self.planner.compute_trajectory(self.init_state, self.goal_state)
+
+    def plot_debug(self):
+        output_dir = os.path.join(out_dir("13"), "index.html_resources")
+        os.makedirs(output_dir, exist_ok=True)
+        
+        times = np.array(self.time_history, dtype=float)
+        errors = np.array(self.error_history)
+        
+        if len(errors) == 0:
+            return
+
+        fig, axs = plt.subplots(3, 1, sharex=True)
+        axs[0].plot(times, errors[:, 0])
+        axs[0].set_ylabel('X Diff')
+        axs[0].grid(True)
+        
+        axs[1].plot(times, errors[:, 1])
+        axs[1].set_ylabel('Y Diff')
+        axs[1].grid(True)
+        
+        axs[2].plot(times, errors[:, 2])
+        axs[2].set_ylabel('Psi Diff')
+        axs[2].set_xlabel('Time')
+        axs[2].grid(True)
+        
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_dir, "debug_diff.png"))
+        plt.close(fig)
 
     def get_commands(self, sim_obs: SimObservations) -> SatelliteCommands:
         """
@@ -135,9 +171,22 @@ class SatelliteAgent(Agent):
         relative_time = sim_obs.time - self.t_replan
         expected_state = self.state_traj.at_interp(relative_time)
 
+        # Calculate errors for plotting
+        diff_x = current_state.x - expected_state.x
+        diff_y = current_state.y - expected_state.y
+        diff_psi = current_state.psi - expected_state.psi
+        # Wrap psi error
+        diff_psi = (diff_psi + np.pi) % (2 * np.pi) - np.pi
+        
+        self.time_history.append(sim_obs.time)
+        self.error_history.append((diff_x, diff_y, diff_psi))
+
         # plotting the trajectory every 2.5 sec (this is optional, for better visualization)
         if Config.PLOT and int(10 * sim_obs.time) % 25 == 0:
             plot_traj(self.state_traj, self.actual_trajectory)
+            
+        if Config.PLOT and int(10 * sim_obs.time) % 2 == 0:
+             self.plot_debug()
 
         # --- CHOOSE REPLANNING STRATEGY ---
 

@@ -93,6 +93,9 @@ class SCvxIterationLog:
     p: NDArray | None = None
 
 
+from pdm4ar.exercises_def.ex13.goal import SpaceshipTarget, DockingTarget
+from dg_commons.sim.goals import PlanningGoal
+
 class SatellitePlanner:
     """
     Feel free to change anything in this class.
@@ -104,6 +107,9 @@ class SatellitePlanner:
     sg: SatelliteGeometry
     sp: SatelliteParameters
     params: SolverParameters
+    
+    # Store the goal
+    goal: PlanningGoal
 
     # Simpy variables
     x: spy.Matrix
@@ -126,6 +132,7 @@ class SatellitePlanner:
         asteroids: dict[PlayerName, AsteroidParams],
         sg: SatelliteGeometry,
         sp: SatelliteParameters,
+        goal: PlanningGoal,
     ):
         """
         Pass environment information to the planner.
@@ -134,6 +141,7 @@ class SatellitePlanner:
         self.asteroids = asteroids
         self.sg = sg
         self.sp = sp
+        self.goal = goal
 
         # Solver Parameters
         self.params = SolverParameters()
@@ -188,6 +196,9 @@ class SatellitePlanner:
         self.init_state = init_state
         self.goal_state = goal_state
         self.X_bar, self.U_bar, self.p_bar = self.initial_guess()
+        
+        # Save initial guess for debugging
+        X_init_guess = self.X_bar.copy()
 
         #
         # TODO: Implement SCvx algorithm or comparable
@@ -376,6 +387,10 @@ class SatellitePlanner:
         # ==================================================
 
         mycmds, mystates = self._extract_trajectory_from_arrays(self.X_bar, self.U_bar, self.p_bar)
+        
+        # --- Docking Debug Plot ---
+        if isinstance(self.goal, DockingTarget):
+            self._debug_plot_docking(self.X_bar, X_init=X_init_guess)
 
         """
         self._convexification()
@@ -390,6 +405,79 @@ class SatellitePlanner:
 
         return mycmds, mystates
     
+    def _debug_plot_docking(self, X_traj: NDArray, X_init: NDArray = None):
+        """
+        Visualizes the docking constraints and the planned trajectory.
+        """
+        import matplotlib.pyplot as plt
+        import os
+        import time
+
+        A, B, C, A1, A2, _ = self.goal.get_landing_constraint_points()
+        
+        fig, ax = plt.subplots(figsize=(10, 10))
+        
+        # Plot Trajectory
+        ax.plot(X_traj[0, :], X_traj[1, :], 'b.-', label='Planned Trajectory')
+        ax.plot(X_traj[0, 0], X_traj[1, 0], 'go', label='Start')
+        ax.plot(X_traj[0, -1], X_traj[1, -1], 'rx', label='End')
+
+        # Plot Initial Guess (if provided)
+        if X_init is not None:
+            ax.plot(X_init[0, :], X_init[1, :], 'k--', alpha=0.5, label='Initial Guess')
+
+        # Plot Dock Geometry (Physical Walls)
+        ax.plot([A1[0], B[0]], [A1[1], B[1]], 'k-', linewidth=3, label='Left Wall')
+        ax.plot([A2[0], C[0]], [A2[1], C[1]], 'k-', linewidth=3, label='Right Wall')
+        ax.plot([A1[0], A2[0]], [A1[1], A2[1]], 'k--', linewidth=2, label='Base')
+
+        # Plot Helper Points
+        ax.scatter(*A, c='m', marker='^', label='A (Apex)')
+        ax.scatter(*B, c='c', marker='o', label='B')
+        ax.scatter(*C, c='c', marker='o', label='C')
+        
+        # Plot Virtual Funnel (Constraint Lines)
+        # Line AB extended
+        self._plot_line_extended(ax, A, B, 'm--', 'Funnel Left')
+        # Line AC extended
+        self._plot_line_extended(ax, A, C, 'm--', 'Funnel Right')
+
+        # Highlight "Active" steps (last 7)
+        N_dock = 7
+        start_k = max(0, self.params.K - N_dock)
+        ax.plot(X_traj[0, start_k:], X_traj[1, start_k:], 'y.', markersize=8, label='Constrained Steps')
+
+        ax.axis('equal')
+        ax.legend()
+        ax.set_title('Docking Constraints Debug')
+        ax.grid(True)
+
+        os.makedirs("plots", exist_ok=True)
+        filename = f"plots/docking_debug_{time.time()}.png"
+        plt.savefig(filename)
+        plt.close(fig)
+        print(f"[DEBUG] Docking plot saved to {filename}")
+
+    def _plot_line_extended(self, ax, p1, p2, style, label):
+        """Helper to plot an infinite line passing through p1 and p2"""
+        xlim = ax.get_xlim()
+        ylim = ax.get_ylim()
+        
+        # Vector
+        v = p2 - p1
+        
+        # If p1 and p2 are close, just plot segment
+        if np.linalg.norm(v) < 1e-6:
+            return
+
+        # Extend linearly
+        # p = p1 + t * v
+        # We pick large t
+        t = np.array([-10, 10])
+        pts = p1 + np.outer(t, v)
+        
+        ax.plot(pts[:, 0], pts[:, 1], style, alpha=0.5, label=label)
+
     def _print_iteration_log_header(self):
         header = (
             f"{'Iter':<5} | {'Radius':<8} | {'J_bar':<10} | {'L_star':<10} | "
@@ -577,10 +665,42 @@ class SatellitePlanner:
             ]
         )
 
-        # Linear interpolation between initial and goal states
         X = np.zeros((n_x, K))
-        for i in range(K):
-            X[:, i] = (1 - tau[i]) * x_init + tau[i] * x_goal
+
+        if isinstance(self.goal, DockingTarget):
+            # --- Smart Initial Guess for Docking ---
+            # Allocate last 25% of steps for the final approach
+            N_dock = int(K * 0.25)
+            k_split = K - N_dock
+
+            # Calculate Waypoint: 3 meters "behind" the target orientation
+            # This forces the path to align with the docking cone
+            dist = 3.0
+            wp_x = self.goal_state.x + dist * np.cos(self.goal_state.psi)
+            wp_y = self.goal_state.y + dist * np.sin(self.goal_state.psi)
+
+            # Waypoint state: Position from calc, Orientation/Velocity from Goal
+            x_wp = x_goal.copy()
+            x_wp[0] = wp_x
+            x_wp[1] = wp_y
+            
+            # Segment 1: Start -> Waypoint (0 to k_split)
+            for k in range(k_split):
+                alpha = k / (k_split - 1) if k_split > 1 else 1.0
+                X[:, k] = (1 - alpha) * x_init + alpha * x_wp
+
+            # Segment 2: Waypoint -> Goal (k_split to K)
+            for k in range(k_split, K):
+                # Map k to range [0, 1] for this segment
+                idx = k - k_split
+                segment_len = K - k_split
+                alpha = idx / (segment_len - 1) if segment_len > 1 else 1.0
+                X[:, k] = (1 - alpha) * x_wp + alpha * x_goal
+
+        else:
+            # --- Standard Linear Interpolation ---
+            for i in range(K):
+                X[:, i] = (1 - tau[i]) * x_init + tau[i] * x_goal
 
         # Control guess (small or zero inputs)
         U = np.zeros((n_u, K))
@@ -752,6 +872,55 @@ class SatellitePlanner:
                 + cvx.norm(p - p_bar, "inf")
                 <= tr_radius
             )
+
+        # --- Docking Constraints ---
+        if isinstance(self.goal, DockingTarget):
+            # Get the geometry points
+            # A: "deep" center point (near target)
+            # B: End of arm 1
+            # C: End of arm 2
+            # A1: Start of dock base
+            # A2: End of dock base
+            A, B, C, A1, A2, _ = self.goal.get_landing_constraint_points()
+            
+            # Number of final steps to enforce constraints
+            N_dock = 7
+            start_k = max(0, K - N_dock)
+
+            # Define the "cone" constraints
+            # We want the satellite to be "between" the lines AB and AC.
+            
+            # Line AB (Arm 1)
+            v_AB = B - A
+            n_AB = np.array([-v_AB[1], v_AB[0]]) # Perpendicular vector
+
+            # Line AC (Arm 2)
+            v_AC = C - A
+            n_AC = np.array([-v_AC[1], v_AC[0]]) # Perpendicular vector
+
+            # Line A1A2 (Dock Base)
+            v_base = A2 - A1
+            n_base = np.array([-v_base[1], v_base[0]])
+
+            # Determine valid side (Midpoint M must be valid)
+            M = (B + C) / 2
+            sign_AB = 1.0 if np.dot(n_AB, M - A) >= 0 else -1.0
+            sign_AC = 1.0 if np.dot(n_AC, M - A) >= 0 else -1.0
+            sign_base = 1.0 if np.dot(n_base, M - A1) >= 0 else -1.0
+
+            # Apply constraints for the final steps
+            for k in range(start_k, K):
+                # Position vector X[:2, k]
+                pos_k = X[:2, k]
+                
+                # Constraint 1: Inner side of Arm 1 (AB)
+                constraints.append(sign_AB * (n_AB @ (pos_k - A)) >= 0)
+                
+                # Constraint 2: Inner side of Arm 2 (AC)
+                constraints.append(sign_AC * (n_AC @ (pos_k - A)) >= 0)
+                
+                # Constraint 3: In front of the dock base (A1A2)
+                constraints.append(sign_base * (n_base @ (pos_k - A1)) >= 0)
 
 
         # Planet collision avoidance constraints:

@@ -3,6 +3,8 @@ from dataclasses import dataclass, field
 from typing import Union
 from xml.sax.handler import feature_namespace_prefixes
 
+import matplotlib.pyplot as plt
+import numpy as np
 from click import clear
 import cvxpy as cvx
 from dg_commons import PlayerName
@@ -53,6 +55,44 @@ class SolverParameters:
     relative_stop_crit: float = 1e-2  # Stopping criteria for relative cost improvement
 
 
+@dataclass
+class SCvxIterationLog:
+    """
+    Data structure to store metrics for a single SCvx iteration.
+    """
+    iteration: int
+    tr_radius: float
+    
+    # Merits and Costs
+    J_bar: float  # Nonlinear merit of reference (old)
+    L_star: float # Linearized merit of candidate (new)
+    J_star: float # Nonlinear merit of candidate (new)
+    
+    # Improvements and Ratio
+    pred_improv: float
+    act_improv: float
+    rho: float
+    
+    # Status
+    accepted: bool
+    status: str # Solver status
+    
+    # Slacks (L1 norms)
+    norm_nu: float
+    norm_nu_ic: float
+    norm_nu_tc: float
+    norm_nu_s: float
+    
+    # Convergence Metrics
+    traj_change: float
+    rel_improv: float
+    
+    # Variables (Optional: keep copies if needed for plotting)
+    X: NDArray | None = None
+    U: NDArray | None = None
+    p: NDArray | None = None
+
+
 class SatellitePlanner:
     """
     Feel free to change anything in this class.
@@ -77,6 +117,8 @@ class SatellitePlanner:
     X_bar: NDArray
     U_bar: NDArray
     p_bar: NDArray
+    
+    history: list[SCvxIterationLog]
 
     def __init__(
         self,
@@ -102,6 +144,8 @@ class SatellitePlanner:
         # Discretization Method
         # self.integrator = ZeroOrderHold(self.Satellite, self.params.K, self.params.N_sub)
         self.integrator = FirstOrderHold(self.satellite, self.params.K, self.params.N_sub)
+        
+        self.history = []
 
         # Check dynamics implementation (pass this test before going further. It is not part of the final evaluation, so you can comment it out later)
         if not self.integrator.check_dynamics():
@@ -137,6 +181,9 @@ class SatellitePlanner:
         # The trust region shrinks during convergence. If we don't reset it for a new plan,
         # the solver starts with an overly restrictive search space, leading to numerical issues.
         self.params.tr_radius = 5.0  # Reset to initial default value
+        
+        self.history = [] # Reset history
+        self._print_iteration_log_header()
 
         self.init_state = init_state
         self.goal_state = goal_state
@@ -181,20 +228,72 @@ class SatellitePlanner:
                 self.params.tr_radius /= self.params.alpha
                 continue
 
-            # You can comment out the line below to disable the verbose iteration summary
-            self._debug_print_iteration_summary(i)
-
-            # You can comment out the line below to disable the defect/nu comparison print
-            self._debug_print_defect_comparison()
-
             # 4. Check for convergence (after a grace period of a few iterations)
-            if i > 1 and self._check_convergence():
-                # If the solution has stabilized, we are done.
-                print(f"Converged after {i+1} iterations.")
-                break
-
+            # Note: We check convergence BEFORE updating trust region, but we might want to log it first.
+            # Ideally, we calculate everything, log it, then check convergence.
+            
             # 5. Update the trust region and decide whether to accept the step
-            accept_step = self._update_trust_region()
+            accept_step, metrics = self._update_trust_region()
+
+            # --- Logging ---
+            # Calculate slack norms for logging
+            norm_nu = np.linalg.norm(self.variables["nu"].value, 1)
+            norm_nu_ic = np.linalg.norm(self.variables["nu_ic"].value, 1)
+            norm_nu_tc = np.linalg.norm(self.variables["nu_tc"].value, 1)
+            norm_nu_s = 0.0
+            if "nu_s" in self.variables and self.variables["nu_s"].value is not None:
+                 norm_nu_s += np.sum(self.variables["nu_s"].value)
+            if "nu_s_asteroids" in self.variables and self.variables["nu_s_asteroids"].value is not None:
+                 norm_nu_s += np.sum(self.variables["nu_s_asteroids"].value)
+            
+            # Calculate Convergence Metrics (for logging only)
+            # 1. Trajectory Change: ||p - p_bar|| + max_k ||x_k - x_bar_k||
+            p_star = self.variables["p"].value
+            X_star = self.variables["X"].value
+            
+            p_change = np.linalg.norm(p_star - self.p_bar)
+            max_x_change = 0.0
+            for k in range(self.params.K):
+                max_x_change = max(max_x_change, np.linalg.norm(X_star[:, k] - self.X_bar[:, k]))
+            traj_change = p_change + max_x_change
+            
+            # 2. Relative Improvement
+            j_bar = metrics["J_bar"]
+            if j_bar > 1e-9:
+                rel_improv = metrics["pred_improv"] / j_bar
+            else:
+                rel_improv = 0.0
+
+            log_entry = SCvxIterationLog(
+                iteration=i,
+                tr_radius=self.params.tr_radius, # Note: this is the UPDATED radius
+                J_bar=metrics["J_bar"],
+                L_star=metrics["L_star"],
+                J_star=metrics["J_star"],
+                pred_improv=metrics["pred_improv"],
+                act_improv=metrics["act_improv"],
+                rho=metrics["rho"],
+                accepted=accept_step,
+                status=self.problem.status,
+                norm_nu=norm_nu,
+                norm_nu_ic=norm_nu_ic,
+                norm_nu_tc=norm_nu_tc,
+                norm_nu_s=norm_nu_s,
+                traj_change=traj_change,
+                rel_improv=rel_improv,
+                # Store copies of variables if needed for plotting (heavy on memory?)
+                X=self.variables["X"].value.copy()
+                # U=self.variables["U"].value.copy(),
+                # p=self.variables["p"].value.copy()
+            )
+            self.history.append(log_entry)
+            self._print_iteration_log(log_entry)
+
+            # Check convergence
+            if i > 1 and self._check_convergence():
+                print(f"Converged after {i+1} iterations.")
+                self._plot_convergence() # Plot results
+                break
 
             # 6. Update the trajectory guess (X_bar) for the next iteration
             if accept_step:
@@ -210,6 +309,7 @@ class SatellitePlanner:
             # This 'else' belongs to the 'for' loop. It runs only if the loop
             # finishes without a 'break', meaning we ran out of iterations.
             print("Warning: SCvx algorithm did not converge within the maximum number of iterations.")
+            self._plot_convergence() # Plot partial results
 
         # 7. Extract the final trajectory
         # After the loop is finished, convert the final trajectory into the required format.
@@ -219,9 +319,8 @@ class SatellitePlanner:
         # Check for "Soft Failure" (Collision Slack)
         if "nu_s_asteroids" in self.variables and self.variables["nu_s_asteroids"].value is not None:
             max_ast_slack = np.max(self.variables["nu_s_asteroids"].value)
-            print(f"\n[DEBUG] Final Max Asteroid Slack: {max_ast_slack:.6e}")
             if max_ast_slack > 1e-3:
-                print("WARNING: Trajectory is INFEASIBLE. The solver is 'paying' the penalty to crash.")
+                print(f"WARNING: Trajectory is INFEASIBLE. Max Asteroid Slack: {max_ast_slack:.6e}")
         # ==================================================
 
         mycmds, mystates = self._extract_trajectory_from_arrays(self.X_bar, self.U_bar, self.p_bar)
@@ -238,6 +337,158 @@ class SatellitePlanner:
         """
 
         return mycmds, mystates
+    
+    def _print_iteration_log_header(self):
+        header = (
+            f"{'Iter':<5} | {'Radius':<8} | {'J_bar':<10} | {'L_star':<10} | "
+            f"{'J_star':<10} | {'Imp(P)':<10} | {'Imp(A)':<10} | {'Rho':<8} | "
+            f"{'Acc':<3} | {'|nu|':<9} | {'|nu_ic|':<9} | {'|nu_tc|':<9} | {'|nu_s|':<9} | {'dTraj':<9} | {'dCost':<9}"
+        )
+        print("-" * len(header))
+        print(header)
+        print("-" * len(header))
+
+    def _print_iteration_log(self, log: SCvxIterationLog):
+        print(
+            f"{log.iteration:<5} | {log.tr_radius:<8.2e} | {log.J_bar:<10.4e} | {log.L_star:<10.4e} | "
+            f"{log.J_star:<10.4e} | {log.pred_improv:<10.2e} | {log.act_improv:<10.2e} | {log.rho:<8.2f} | "
+            f"{'Y' if log.accepted else 'N':<3} | {log.norm_nu:<9.2e} | {log.norm_nu_ic:<9.2e} | {log.norm_nu_tc:<9.2e} | {log.norm_nu_s:<9.2e} | "
+            f"{log.traj_change:<9.2e} | {log.rel_improv:<9.2e}"
+        )
+    
+    def _plot_convergence(self):
+        if not self.history:
+            return
+
+        iterations = [log.iteration for log in self.history]
+        
+        # 1. Merit and Cost
+        J_vals = [log.J_bar for log in self.history]
+        J_star_vals = [log.J_star for log in self.history]
+        L_star_vals = [log.L_star for log in self.history]
+        
+        # 2. Radius
+        radii = [log.tr_radius for log in self.history]
+        
+        # 3. Slacks
+        nu_vals = [log.norm_nu for log in self.history]
+        nu_ic_vals = [log.norm_nu_ic for log in self.history]
+        nu_tc_vals = [log.norm_nu_tc for log in self.history]
+        nu_s_vals = [log.norm_nu_s for log in self.history]
+        
+        # 4. Convergence Metrics
+        traj_change_vals = [log.traj_change for log in self.history]
+        rel_improv_vals = [max(1e-16, log.rel_improv) for log in self.history] # Avoid log(0)
+
+        fig, axs = plt.subplots(2, 3, figsize=(18, 12))
+        
+        # Plot Cost [0, 0]
+        axs[0, 0].plot(iterations, J_vals, 'b-o', label='J_bar (Ref)')
+        axs[0, 0].plot(iterations, J_star_vals, 'g-x', label='J_star (Cand)')
+        axs[0, 0].plot(iterations, L_star_vals, 'r--', label='L_star (Lin)')
+        axs[0, 0].set_title('Merit Function Evolution')
+        axs[0, 0].set_yscale('log')
+        axs[0, 0].legend(fontsize='small')
+        axs[0, 0].grid(True)
+        
+        # Plot Radius [0, 1]
+        axs[0, 1].plot(iterations, radii, 'r-x')
+        axs[0, 1].set_title('Trust Region Radius')
+        axs[0, 1].set_yscale('log')
+        axs[0, 1].grid(True)
+        
+        # Plot Rho [0, 2]
+        rhos = [log.rho for log in self.history]
+        axs[0, 2].plot(iterations, rhos, 'k-d')
+        axs[0, 2].axhline(y=0, color='r', linestyle='--')
+        axs[0, 2].axhline(y=self.params.rho_0, color='y', linestyle=':')
+        axs[0, 2].axhline(y=self.params.rho_1, color='g', linestyle=':')
+        axs[0, 2].axhline(y=self.params.rho_2, color='g', linestyle='--')
+        axs[0, 2].set_title('Ratio (Rho)')
+        # axs[0, 2].set_ylim(-0.5, 2.0) # Clip y-axis for readability
+        axs[0, 2].grid(True)
+        
+        # Plot Slacks [1, 0]
+        axs[1, 0].plot(iterations, nu_vals, 'g-^', label='||nu|| (Dyn)')
+        axs[1, 0].plot(iterations, nu_ic_vals, 'c-s', label='||nu_ic|| (Init)')
+        axs[1, 0].plot(iterations, nu_tc_vals, 'y-d', label='||nu_tc|| (Term)')
+        axs[1, 0].plot(iterations, nu_s_vals, 'm-v', label='||nu_s|| (Coll)')
+        axs[1, 0].set_title('Slack Variables (L1 Norm)')
+        axs[1, 0].set_yscale('log')
+        axs[1, 0].legend(fontsize='small')
+        axs[1, 0].grid(True)
+        
+        # Plot Convergence Criteria [1, 1]
+        axs[1, 1].plot(iterations, traj_change_vals, 'b-s', label='Traj Change')
+        axs[1, 1].plot(iterations, rel_improv_vals, 'r-o', label='Rel Improv')
+        axs[1, 1].axhline(y=self.params.stop_crit, color='b', linestyle='--', label='Traj Thresh')
+        axs[1, 1].axhline(y=self.params.relative_stop_crit, color='r', linestyle='--', label='Cost Thresh')
+        axs[1, 1].set_title('Convergence Criteria')
+        axs[1, 1].set_yscale('log')
+        axs[1, 1].legend(fontsize='small')
+        axs[1, 1].grid(True)
+        
+        # Plot Trajectories [1, 2]
+        # Iterate through history and plot X trajectories
+        # X shape is (n_x, K). Position is index 0 and 1 (x, y).
+        
+        total_iters = len(self.history)
+        # We want: Start (0), End (N-1), and max 3 intermediates.
+        # Total plots = 2 + 3 = 5.
+        # If total_iters <= 5, plot all.
+        # Else, we need a stride.
+        if total_iters <= 5:
+            plot_step = 1
+        else:
+            # We want to pick 3 indices between 1 and N-2.
+            # Example: N=10. Indices: 0, 1..8, 9.
+            # We can just divide the range into 4 segments?
+            # Simple approach: stride = total // 4
+            plot_step = total_iters // 4
+
+        for idx, log in enumerate(self.history):
+            if log.X is None:
+                continue
+            
+            X = log.X
+            x_coords = X[0, :]
+            y_coords = X[1, :]
+            
+            if idx == 0:
+                # Initial Guess / First Iteration
+                axs[1, 2].plot(x_coords, y_coords, 'r--', label='Iter 0', alpha=0.8)
+            elif idx == total_iters - 1:
+                # Final Iteration
+                axs[1, 2].plot(x_coords, y_coords, 'g-', label=f'Final (Iter {log.iteration})', linewidth=2)
+            elif idx % plot_step == 0:
+                # Intermediate Iterations
+                axs[1, 2].plot(x_coords, y_coords, 'b-', alpha=0.2)
+
+        # Plot start and goal
+        # Use init_state and goal_state from the log or params if available, 
+        # but strictly we have them in the planner object.
+        # We can access self.init_state (SatelliteState) and self.goal_state (DynObstacleState)
+        axs[1, 2].plot(self.init_state.x, self.init_state.y, 'ko', label='Start')
+        axs[1, 2].plot(self.goal_state.x, self.goal_state.y, 'rx', label='Goal')
+
+        axs[1, 2].set_title('Trajectory Evolution (X vs Y)')
+        axs[1, 2].set_xlabel('X [m]')
+        axs[1, 2].set_ylabel('Y [m]')
+        axs[1, 2].legend(fontsize='small')
+        axs[1, 2].grid(True)
+        axs[1, 2].axis('equal')
+        
+        plt.tight_layout()
+        
+        # Save plot
+        import os
+        os.makedirs("plots", exist_ok=True)
+        # Use timestamp or unique ID to avoid overwriting if run multiple times rapidly? 
+        # For now, iteration count is decent.
+        filename = f"plots/convergence_iter_{self.history[-1].iteration}.png"
+        plt.savefig(filename)
+        print(f"Convergence plot saved to {filename}")
+        plt.close(fig)
 
     def initial_guess(self) -> tuple[NDArray, NDArray, NDArray]:
         """
@@ -656,7 +907,7 @@ class SatellitePlanner:
         self.problem_parameters["p_bar"].value = self.p_bar
 
         # You can comment out the line below to disable the verbose consistency check
-        self._debug_check_flow_map_consistency(self.X_bar, self.U_bar, self.p_bar)
+        # self._debug_check_flow_map_consistency(self.X_bar, self.U_bar, self.p_bar)
 
         # Update planet constraint parameters for the current linearization.
         num_planets = len(self.planets)
@@ -899,10 +1150,11 @@ class SatellitePlanner:
 
         return J_val
 
-    def _update_trust_region(self) -> bool:
+    def _update_trust_region(self) -> tuple[bool, dict]:
         """
         Update trust region radius and decide whether to accept or reject the step.
         Returns True if the step is accepted, False otherwise.
+        Also returns a dictionary with metrics for logging.
         """
         X_star = self.variables["X"].value
         U_star = self.variables["U"].value
@@ -924,13 +1176,13 @@ class SatellitePlanner:
         actual_improvement = merit_old - merit_new
 
         # You can comment out the line below to disable the trust region update print
-        self._debug_print_trust_region_update(merit_old, merit_new, L_new, actual_improvement, predicted_improvement)
+        # self._debug_print_trust_region_update(merit_old, merit_new, L_new, actual_improvement, predicted_improvement)
 
         # Avoid division by zero; if predicted improvement is not positive, the step is bad.
-        if predicted_improvement <= 1e-4:  # Use a small tolerance
-            rho = -1  # Indicates a bad step
+        if predicted_improvement <= 1e-9:  # Use a small tolerance
+            rho = -1.0  # Indicates a bad step
         else:
-            rho = actual_improvement / predicted_improvement
+            rho = (actual_improvement / predicted_improvement).item() # Ensure float
 
         # Update the trust region radius based on the rho value
         if rho <= self.params.rho_0:
@@ -952,7 +1204,16 @@ class SatellitePlanner:
         # Clamp the trust region radius to its min/max values
         self.params.tr_radius = np.clip(self.params.tr_radius, self.params.min_tr_radius, self.params.max_tr_radius)
 
-        return accept_step
+        metrics = {
+            "J_bar": merit_old.item() if hasattr(merit_old, "item") else merit_old,
+            "J_star": merit_new.item() if hasattr(merit_new, "item") else merit_new,
+            "L_star": L_new,
+            "pred_improv": predicted_improvement.item() if hasattr(predicted_improvement, "item") else predicted_improvement,
+            "act_improv": actual_improvement.item() if hasattr(actual_improvement, "item") else actual_improvement,
+            "rho": rho
+        }
+
+        return accept_step, metrics
 
     def _get_asteroid_position(self, asteroid: AsteroidParams, time: float) -> np.ndarray:
         """

@@ -753,6 +753,10 @@ class SatellitePlanner:
         if n_asteroids > 0:
             variables["nu_s_asteroids"] = cvx.Variable(n_asteroids * K, nonneg=True) # Slack for asteroid constraints
 
+        if isinstance(self.goal, DockingTarget):
+            # Virtual planet slack for the first K-7 steps
+            variables["nu_s_virtual"] = cvx.Variable(K - 7, nonneg=True)
+
         return variables
 
     def _get_problem_parameters(self) -> dict:
@@ -790,6 +794,11 @@ class SatellitePlanner:
         if n_asteroids > 0:
             problem_parameters["asteroid_C"] = cvx.Parameter((n_asteroids * K, 2))
             problem_parameters["asteroid_r_prime"] = cvx.Parameter(n_asteroids * K)
+
+        if isinstance(self.goal, DockingTarget):
+            # Virtual planet parameters for the first K-7 steps
+            problem_parameters["virtual_planet_C"] = cvx.Parameter((K - 7, 2))
+            problem_parameters["virtual_planet_r_prime"] = cvx.Parameter(K - 7)
 
         # These parameters are flattened to account for cvxpy's 2D parameter limit.
         # The index 'idx' for these flattened arrays maps to (planet_idx, time_step_k)
@@ -921,6 +930,14 @@ class SatellitePlanner:
                 
                 # Constraint 3: In front of the dock base (A1A2)
                 constraints.append(sign_base * (n_base @ (pos_k - A1)) >= 0)
+            
+            # Virtual Planet Constraints (Avoid the dock base for the first K-7 steps)
+            vp_C = self.problem_parameters["virtual_planet_C"]
+            vp_r = self.problem_parameters["virtual_planet_r_prime"]
+            nu_vp = self.variables["nu_s_virtual"]
+            
+            for k in range(K - 7):
+                constraints.append(vp_C[k, :] @ X[:2, k] + vp_r[k] <= nu_vp[k])
 
 
         # Planet collision avoidance constraints:
@@ -1059,6 +1076,9 @@ class SatellitePlanner:
                 n_asteroids = len(self.asteroids)
                 indices = [i * K + k for i in range(n_asteroids)]
                 cost_collision += lambda_val * cvx.sum(self.variables["nu_s_asteroids"][indices])
+
+            if "nu_s_virtual" in self.variables and k < K - 7:
+                cost_collision += lambda_val * self.variables["nu_s_virtual"][k]
 
             # Add weighted term to integral
             integral_sum += weight * (cost_fuel + cost_dynamics + cost_collision)
@@ -1207,6 +1227,33 @@ class SatellitePlanner:
             self.problem_parameters["asteroid_C"].value = asteroid_C_val
             self.problem_parameters["asteroid_r_prime"].value = asteroid_r_prime_val
 
+        if isinstance(self.goal, DockingTarget):
+             # Calculate Virtual Planet Geometry
+             A, B, C, A1, A2, _ = self.goal.get_landing_constraint_points()
+             p_center = (A1 + A2) / 2
+             p_radius = np.linalg.norm(A1 - A2) / 2
+             
+             # Satellite Radius
+             satellite_radius = np.sqrt((self.sg.w_half + self.sg.w_panel) ** 2 + (self.sg.l_f**2)) + 0.5
+             effective_radius = p_radius + satellite_radius
+             
+             # Parameters
+             vp_C_val = np.zeros((self.params.K - 7, 2))
+             vp_r_val = np.zeros(self.params.K - 7)
+             
+             for k in range(self.params.K - 7):
+                 x_bar_k = self.X_bar[:2, k]
+                 
+                 # C_k = -2 * (x_bar_k - p_center)
+                 vp_C_val[k, :] = -2 * (x_bar_k - p_center)
+                 
+                 # r'_k = r_eff^2 - ||diff||^2 + 2 * diff^T * x_bar
+                 diff = x_bar_k - p_center
+                 vp_r_val[k] = effective_radius**2 - np.sum(diff**2) + 2 * diff @ x_bar_k
+                 
+             self.problem_parameters["virtual_planet_C"].value = vp_C_val
+             self.problem_parameters["virtual_planet_r_prime"].value = vp_r_val
+
     def _check_convergence(self) -> bool:
         """
         Check convergence of SCvx.
@@ -1353,6 +1400,20 @@ class SatellitePlanner:
                     dist = np.linalg.norm(X[:2, k] - a_pos)
                     # FIX: Use squared distance here too
                     collision_violations[k] += max(0.0, eff_rad**2 - dist**2)
+
+        if isinstance(self.goal, DockingTarget):
+             # Virtual Planet Violation
+             A, B, C, A1, A2, _ = self.goal.get_landing_constraint_points()
+             p_center = (A1 + A2) / 2
+             p_radius = np.linalg.norm(A1 - A2) / 2
+             
+             satellite_radius = np.sqrt((self.sg.w_half + self.sg.w_panel) ** 2 + (self.sg.l_f**2)) + 0.5
+             effective_radius = p_radius + satellite_radius
+             
+             for k in range(K - 7):
+                 dist_sq = np.sum((X[:2, k] - p_center)**2)
+                 # Violation = max(0, eff_rad^2 - dist^2)
+                 collision_violations[k] += max(0.0, effective_radius**2 - dist_sq)
 
         # C. Fuel Cost (Original Running Cost)
         fuel_costs = self.params.weight_u * np.sum(U**2, axis=0) # Shape (K,)

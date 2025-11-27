@@ -28,8 +28,8 @@ class SolverParameters:
     """
 
     # Cvxpy solver parameters
-    # solver: str = "ECOS"  # specify solver to use
-    solver: str = "SCS"
+    solver: str = "ECOS"  # specify solver to use
+    #solver: str = "SCS"
     verbose_solver: bool = False  # if True, the optimization steps are shown
     max_iterations: int = 100  # max algorithm iterations
 
@@ -227,6 +227,58 @@ class SatellitePlanner:
                 print(f"Problem not optimal on iteration {i}: status is {self.problem.status}")
                 self.params.tr_radius /= self.params.alpha
                 continue
+
+            # # ... inside compute_trajectory loop ...
+
+            # # 1. Calculate Merit Components for X_bar
+            # merit_old = self._calculate_nonlinear_merit(self.X_bar, self.U_bar, self.p_bar)
+            # # Note: You might need to modify _calculate_nonlinear_merit to return components (fuel, time, dynamics, collision)
+            # # Or just manually calculate them here for debugging:
+
+            # val_time = (self.params.weight_p @ self.p_bar).item()
+            # val_fuel = self.params.weight_u * np.sum(self.U_bar**2) * (1.0/(self.params.K-1))
+
+            # # Calculate Defects (Dynamics) for X_bar
+            # X_nl = self.integrator.integrate_nonlinear_piecewise(self.X_bar, self.U_bar, self.p_bar)
+            # val_dyn_defect = self.params.lambda_nu * np.sum(np.abs(self.X_bar[:, 1:] - X_nl[:, 1:])) * (1.0/(self.params.K-1))
+
+            # # Calculate Collision Violation for X_bar
+            # # COPY your squared logic from _calculate_nonlinear_merit here
+            # # val_coll = ... 
+
+            # print(f"--- COST MISMATCH DEBUG ---")
+            # print(f"Merit (Ref): Time={val_time:.4e}, Fuel={val_fuel:.4e}, Dyn={val_dyn_defect:.4e}") # Add val_coll
+
+            # # 2. Calculate Solver Cost Components for X_bar (Theoretical)
+            # # If the solver stayed at X_bar, what would the cost be?
+            # # It should be identical to above.
+
+            # # 3. Compare with Solver Solution (L_star) components
+            # p_new = self.variables["p"].value
+            # u_new = self.variables["U"].value
+            # nu_new = self.variables["nu"].value
+            # # Safely get planet slack (if any)
+            # if "nu_s" in self.variables:
+            #     nu_s_new = self.variables["nu_s"].value
+            #     sum_nu_s = np.sum(nu_s_new)
+            # else:
+            #     sum_nu_s = 0.0
+
+            # # Safely get asteroid slack (if any)
+            # if "nu_s_asteroids" in self.variables:
+            #     nu_s_ast_new = self.variables["nu_s_asteroids"].value
+            #     sum_nu_s_ast = np.sum(nu_s_ast_new)
+            # else:
+            #     sum_nu_s_ast = 0.0
+
+            # sol_time = (self.params.weight_p @ p_new).item()
+            # sol_fuel = self.params.weight_u * np.sum(u_new**2) * (1.0/(self.params.K-1))
+            # sol_dyn = self.params.lambda_nu * np.sum(np.abs(nu_new)) * (1.0/(self.params.K-1))
+            # sol_coll = self.params.lambda_nu * np.sum(nu_s_new) * (1.0/(self.params.K-1))
+
+            # print(f"Solver (New): Time={sol_time:.4e}, Fuel={sol_fuel:.4e}, Dyn={sol_dyn:.4e}, Coll={sol_coll:.4e}")
+            # print(f"Total L_new: {self.problem.value:.4e}")
+            # print(f"---------------------------")
 
             # 4. Check for convergence (after a grace period of a few iterations)
             # Note: We check convergence BEFORE updating trust region, but we might want to log it first.
@@ -907,7 +959,7 @@ class SatellitePlanner:
         self.problem_parameters["p_bar"].value = self.p_bar
 
         # You can comment out the line below to disable the verbose consistency check
-        # self._debug_check_flow_map_consistency(self.X_bar, self.U_bar, self.p_bar)
+        self._debug_check_flow_map_consistency(self.X_bar, self.U_bar, self.p_bar)
 
         # Update planet constraint parameters for the current linearization.
         num_planets = len(self.planets)
@@ -1118,7 +1170,8 @@ class SatellitePlanner:
                 eff_rad = planet.radius + sat_rad
                 dists = np.linalg.norm(X[:2, :] - p_center.reshape(-1,1), axis=0)
                 # Constraint: dist >= rad  -->  Violation: max(0, rad - dist)
-                collision_violations += np.maximum(0.0, eff_rad - dists)
+                # FIX: Use squared distance to match solver's linearized constraint units
+                collision_violations += np.maximum(0.0, eff_rad**2 - dists**2)
 
         # Check Asteroids (Time dependent)
         if len(self.asteroids) > 0:
@@ -1129,7 +1182,8 @@ class SatellitePlanner:
                     t_real = p[0] * (k / (K - 1)) if K > 1 else 0.0
                     a_pos = self._get_asteroid_position(asteroid, t_real)
                     dist = np.linalg.norm(X[:2, k] - a_pos)
-                    collision_violations[k] += max(0.0, eff_rad - dist)
+                    # FIX: Use squared distance here too
+                    collision_violations[k] += max(0.0, eff_rad**2 - dist**2)
 
         # C. Fuel Cost (Original Running Cost)
         fuel_costs = self.params.weight_u * np.sum(U**2, axis=0) # Shape (K,)

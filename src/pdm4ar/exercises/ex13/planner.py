@@ -34,14 +34,14 @@ class SolverParameters:
     max_iterations: int = 100  # max algorithm iterations
 
     # SCVX parameters (Add paper reference)
-    lambda_nu: float = 1e5  # slack variable weight
+    lambda_nu: float = 1e5  # slack variable wgit reset --hardeight
     # weight_p: NDArray = field(default_factory=lambda: 10 * np.array([[1.0]]).reshape((1, -1)))  # weight for final time
     weight_p = 10.0
     weight_U = 1.0
 
     tr_radius: float = 5  # initial trust region radius
     tr_weights = {"X": 1, "U": 1, "p": 1}
-    min_tr_radius: float = 1e-4  # min trust region radius
+    min_tr_radius: float = 1e-5  # min trust region radius
     max_tr_radius: float = 100  # max trust region radius
     rho_0: float = 0.0  # trust region 0
     rho_1: float = 0.25  # trust region 1
@@ -53,7 +53,7 @@ class SolverParameters:
     K: int = 50  # number of discretization steps
     N_sub: int = 5  # used inside ode solver inside discretization
     stop_crit: float = 1e-4  # Stopping criteria constant
-    eps_r: float = 1e-3
+    eps_r: float = 1e-4
 
     map_characteristic_dimension: float = 11.0
 
@@ -174,7 +174,6 @@ class SatellitePlanner:
 
         for i in range(self.params.max_iterations):
             if self.tr_radius < self.params.min_tr_radius:
-                print(f"Iteration {i} exceeded tr_radius bounds.")
                 break
 
             # Linearize the system about the reference trajectory
@@ -196,14 +195,20 @@ class SatellitePlanner:
             p_star = self.variables["p"].value
             J_star = self.nonlinear_convex_cost(X_star, U_star, p_star)
 
+            print(i, self.J_bar, J_star, L_star)
+
             # Check convergence
             eps = self.params.stop_crit
             max_state_change_conv_crit = norm(p_star - self.p_bar) + norm(X_star - self.X_bar, 1) < eps
 
             dJ_predicted = self.J_bar - L_star
-            cost_improvement_conv_crit = (
-                True if dJ_predicted < eps else dJ_predicted < self.params.eps_r * abs(self.J_bar)
-            )
+
+            cost_improvement_conv_crit = True
+            if dJ_predicted < eps:
+                cost_improvement_conv_crit = dJ_predicted < self.params.eps_r * abs(self.J_bar)
+            # cost_improvement_conv_crit = (
+            #     True if dJ_predicted < eps else dJ_predicted < self.params.eps_r * abs(self.J_bar)
+            # )
 
             converged = max_state_change_conv_crit or cost_improvement_conv_crit
 
@@ -242,8 +247,9 @@ class SatellitePlanner:
 
         m = self.satellite.sp.m_v
         F_max = self.satellite.F_max
-        t_f_guess = 2 * np.sqrt(m * norm(X0[:2] - Xf[:2]) / F_max)
+        t_f_guess = 4 * np.sqrt(m * norm(X0[:2] - Xf[:2]) / F_max)
         p = np.array([t_f_guess])
+        p = np.array([10.0])
 
         return X, U, p
 

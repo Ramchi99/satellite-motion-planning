@@ -1,3 +1,9 @@
+# cone + two-point dock constraint
+# p jacobian ON
+# map limit constraint ON (k>=5)
+# weight_p changed to 5.0 (default 10.0)
+# physics-informed time-guess (n = 3)
+
 import ast
 from dataclasses import dataclass, field
 from re import X
@@ -38,7 +44,7 @@ class SolverParameters:
     # SCVX parameters (Add paper reference)
     lambda_nu: float = 1e6  # slack variable weight
     # weight_p: NDArray = field(default_factory=lambda: 10 * np.array([[1.0]]).reshape((1, -1)))  # weight for final time
-    weight_p = 10.0
+    weight_p = 5.0
     weight_U = 1.0
 
     tr_radius: float = 5  # initial trust region radius
@@ -253,9 +259,8 @@ class SatellitePlanner:
 
         m = self.satellite.sp.m_v
         F_max = self.satellite.F_max
-        t_f_guess = 4 * np.sqrt(m * norm(X0[:2] - Xf[:2]) / F_max)
+        t_f_guess = 3 * np.sqrt(m * norm(X0[:2] - Xf[:2]) / F_max)
         p = np.array([t_f_guess])
-        # p = np.array([10.0])
 
         return X, U, p
 
@@ -379,9 +384,9 @@ class SatellitePlanner:
         F_max = self.satellite.sp.F_limits[1]
         D_max = self.params.map_characteristic_dimension - buff
         constraints.extend([cvx.norm(U[:, k], "inf") <= F_max for k in range(K)])
-        # constraints.extend(
-        #     [cvx.norm(X[:2, k], "inf") <= D_max for k in range(self.params.map_edge_constr_activation_time, K)]
-        # )
+        constraints.extend(
+            [cvx.norm(X[:2, k], "inf") <= D_max for k in range(self.params.map_edge_constr_activation_time, K)]
+        )
 
         # nonconvex path constraints
         if self.obstacles:

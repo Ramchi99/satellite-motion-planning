@@ -59,14 +59,50 @@ class AvgPlayerMetrics(PerformanceResults):
 
     def reduce_to_score(self) -> float:
         """Higher is better"""
-        score = (self.goal_success_rate - self.collision_rate) * 1e3
-        score -= self.avg_computation_time * 1e2
-        score -= (
-            self.avg_distance2goal / 2
-            + self.avg_distance_travelled / 5
-            + self.avg_episode_duration / 3
-            + self.avg_actuation_effort
-        ) * 1e1
+        # score = (self.goal_success_rate - self.collision_rate) * 1e3
+        # score -= self.avg_computation_time * 1e2
+        # score -= (
+        #     self.avg_distance2goal / 2
+        #     + self.avg_distance_travelled / 5
+        #     + self.avg_episode_duration / 3
+        #     + self.avg_actuation_effort
+        # ) * 1e1
+        # return score
+
+        # Weights
+        w_success = 1e3
+        w_collision = -1e3
+        w_comp_time = -1e2
+        w_dist_goal = -1e1 / 2
+        w_dist_travelled = -1e1 / 5
+        w_duration = -1e1 / 3
+        w_actuation = -1e1
+
+        # Contributions
+        c_success = self.goal_success_rate * w_success
+        c_collision = self.collision_rate * w_collision
+        c_comp_time = self.avg_computation_time * w_comp_time
+        c_dist_goal = self.avg_distance2goal * w_dist_goal
+        c_dist_travelled = self.avg_distance_travelled * w_dist_travelled
+        c_duration = self.avg_episode_duration * w_duration
+        c_actuation = self.avg_actuation_effort * w_actuation
+        
+        score = c_success + c_collision + c_comp_time + c_dist_goal + c_dist_travelled + c_duration + c_actuation
+        
+        print("\n--- Score Breakdown ---")
+        print(f"{'Metric':<25} | {'Val':<10} | {'W':<10} | {'Score':<10}")
+        print("-" * 65)
+        print(f"{'Goal Success':<25} | {self.goal_success_rate:<10.4f} | {w_success:<10.1f} | {c_success:<10.2f}")
+        print(f"{'Collision Rate':<25} | {self.collision_rate:<10.4f} | {w_collision:<10.1f} | {c_collision:<10.2f}")
+        print(f"{'Comp Time':<25} | {self.avg_computation_time:<10.4f} | {w_comp_time:<10.1f} | {c_comp_time:<10.2f}")
+        print(f"{'Dist to Goal':<25} | {self.avg_distance2goal:<10.4f} | {w_dist_goal:<10.2f} | {c_dist_goal:<10.2f}")
+        print(f"{'Dist Travelled':<25} | {self.avg_distance_travelled:<10.4f} | {w_dist_travelled:<10.2f} | {c_dist_travelled:<10.2f}")
+        print(f"{'Duration':<25} | {self.avg_episode_duration:<10.4f} | {w_duration:<10.2f} | {c_duration:<10.2f}")
+        print(f"{'Actuation':<25} | {self.avg_actuation_effort:<10.4f} | {w_actuation:<10.2f} | {c_actuation:<10.2f}")
+        print("-" * 65)
+        print(f"{'TOTAL SCORE':<25} | {'':<10} | {'':<10} | {score:<10.2f}")
+        print("-----------------------\n")
+
         return score
 
 

@@ -1,4 +1,4 @@
-# Test case 1 in pdm4ar_scvxx
+#Test case 1 in pdm4ar_scvxx
 agents:
   PDM4ARSpaceship: # do not change this name
     color: 'blue'
@@ -26,6 +26,24 @@ planets:
   Namek:
     center: [0, 0]
     radius: 2.1
+
+planets:
+  Namek_:
+    center: [0, 0]
+    radius: 1.5
+
+asteroids:
+  Apophis:
+    start: [7.5, -5.0]
+    radius: 1.0
+    velocity: [-1.0, 0.0]
+    orientation: -0.5
+
+  Fucker:
+    start: [0.0, 0.0]
+    radius: 1.0
+    velocity: [0.0, -1.0]
+    orientation: 0.0
 
 boundary:
   corners:

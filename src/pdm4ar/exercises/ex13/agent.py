@@ -18,13 +18,14 @@ from pdm4ar.exercises_def.ex13.utils_params import PlanetParams, AsteroidParams
 from pdm4ar.exercises_def.ex13.utils_plot import plot_traj
 import matplotlib.pyplot as plt
 import os
+from datetime import datetime
 from pdm4ar.exercises_def.structures import out_dir
 
 
 # HINT: as a good practice we suggest to use the config class to centralise activation of the debugging options
 class Config:
     PLOT = True
-    VERBOSE = False
+    VERBOSE = True
 
 
 @dataclass(frozen=True)

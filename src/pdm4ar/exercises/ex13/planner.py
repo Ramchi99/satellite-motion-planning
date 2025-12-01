@@ -34,8 +34,8 @@ class SolverParameters:
     max_iterations: int = 100  # max algorithm iterations
 
     # SCVX parameters (Add paper reference)
-    lambda_nu: float = 1e5  # slack variable weight
-    weight_p: NDArray = field(default_factory=lambda: 5.0 * np.array([[1.0]]).reshape((1, -1)))  # weight for final time
+    lambda_nu: float = 1e6  # slack variable weight
+    weight_p: NDArray = field(default_factory=lambda: 1.0 * np.array([[1.0]]).reshape((1, -1)))  # weight for final time
     weight_u: float = 1.0  # weight for control inputs
 
     tr_radius: float = 5  # initial trust region radius
@@ -50,7 +50,7 @@ class SolverParameters:
     # Discretization constants
     K: int = 50  # number of discretization steps
     N_sub: int = 5  # used inside ode solver inside discretization
-    stop_crit: float = 1e-5  # Stopping criteria constant
+    stop_crit: float = 1e-4  # Stopping criteria constant
     relative_stop_crit: float = 5e-3  # Stopping criteria for relative cost improvement
 
 
@@ -201,7 +201,8 @@ class SatellitePlanner:
         self.params.tr_radius = 5.0  # Reset to initial default value
         
         self.history = [] # Reset history
-        self._print_iteration_log_header()
+        # DEBUG print
+        # self._print_iteration_log_header()
 
         self.init_state = init_state
         self.goal_state = goal_state
@@ -209,22 +210,6 @@ class SatellitePlanner:
         
         # Save initial guess for debugging
         X_init_guess = self.X_bar.copy()
-
-        #
-        # TODO: Implement SCvx algorithm or comparable
-        #
-
-        """
-        for SCvx it would follow a logic similar to:
-        
-        initial guess interpolation
-        while stopping criterion not satisfied
-            convexify
-            discretize
-            solve convex sub problem
-            update trust region
-            update stopping criterion
-        """
 
         # Main SCvx iteration loop
         for i in range(self.params.max_iterations):
@@ -248,58 +233,6 @@ class SatellitePlanner:
                 print(f"Problem not optimal on iteration {i}: status is {self.problem.status}")
                 self.params.tr_radius /= self.params.alpha
                 continue
-
-            # # ... inside compute_trajectory loop ...
-
-            # # 1. Calculate Merit Components for X_bar
-            # merit_old = self._calculate_nonlinear_merit(self.X_bar, self.U_bar, self.p_bar)
-            # # Note: You might need to modify _calculate_nonlinear_merit to return components (fuel, time, dynamics, collision)
-            # # Or just manually calculate them here for debugging:
-
-            # val_time = (self.params.weight_p @ self.p_bar).item()
-            # val_fuel = self.params.weight_u * np.sum(self.U_bar**2) * (1.0/(self.params.K-1))
-
-            # # Calculate Defects (Dynamics) for X_bar
-            # X_nl = self.integrator.integrate_nonlinear_piecewise(self.X_bar, self.U_bar, self.p_bar)
-            # val_dyn_defect = self.params.lambda_nu * np.sum(np.abs(self.X_bar[:, 1:] - X_nl[:, 1:])) * (1.0/(self.params.K-1))
-
-            # # Calculate Collision Violation for X_bar
-            # # COPY your squared logic from _calculate_nonlinear_merit here
-            # # val_coll = ... 
-
-            # print(f"--- COST MISMATCH DEBUG ---")
-            # print(f"Merit (Ref): Time={val_time:.4e}, Fuel={val_fuel:.4e}, Dyn={val_dyn_defect:.4e}") # Add val_coll
-
-            # # 2. Calculate Solver Cost Components for X_bar (Theoretical)
-            # # If the solver stayed at X_bar, what would the cost be?
-            # # It should be identical to above.
-
-            # # 3. Compare with Solver Solution (L_star) components
-            # p_new = self.variables["p"].value
-            # u_new = self.variables["U"].value
-            # nu_new = self.variables["nu"].value
-            # # Safely get planet slack (if any)
-            # if "nu_s" in self.variables:
-            #     nu_s_new = self.variables["nu_s"].value
-            #     sum_nu_s = np.sum(nu_s_new)
-            # else:
-            #     sum_nu_s = 0.0
-
-            # # Safely get asteroid slack (if any)
-            # if "nu_s_asteroids" in self.variables:
-            #     nu_s_ast_new = self.variables["nu_s_asteroids"].value
-            #     sum_nu_s_ast = np.sum(nu_s_ast_new)
-            # else:
-            #     sum_nu_s_ast = 0.0
-
-            # sol_time = (self.params.weight_p @ p_new).item()
-            # sol_fuel = self.params.weight_u * np.sum(u_new**2) * (1.0/(self.params.K-1))
-            # sol_dyn = self.params.lambda_nu * np.sum(np.abs(nu_new)) * (1.0/(self.params.K-1))
-            # sol_coll = self.params.lambda_nu * np.sum(nu_s_new) * (1.0/(self.params.K-1))
-
-            # print(f"Solver (New): Time={sol_time:.4e}, Fuel={sol_fuel:.4e}, Dyn={sol_dyn:.4e}, Coll={sol_coll:.4e}")
-            # print(f"Total L_new: {self.problem.value:.4e}")
-            # print(f"---------------------------")
 
             # 4. Check for convergence (after a grace period of a few iterations)
             # Note: We check convergence BEFORE updating trust region, but we might want to log it first.
@@ -360,7 +293,8 @@ class SatellitePlanner:
                 # p=self.variables["p"].value.copy()
             )
             self.history.append(log_entry)
-            self._print_iteration_log(log_entry)
+            # DEBUG print
+            # self._print_iteration_log(log_entry)
 
             # Check convergence
             if i > 1 and self._check_convergence():
@@ -386,7 +320,8 @@ class SatellitePlanner:
 
         # 7. Extract the final trajectory
         # After the loop is finished, convert the final trajectory into the required format.
-        print("X_bar: ", self.X_bar, "U_bar: ", self.U_bar, "p_bar: ", self.p_bar)
+        # DEBUG print
+        # print("X_bar: ", self.X_bar, "U_bar: ", self.U_bar, "p_bar: ", self.p_bar)
 
         # ================= ADD THIS BLOCK =================
         # Check for "Soft Failure" (Collision Slack)
@@ -869,7 +804,7 @@ class SatellitePlanner:
         # convex path constraints
         F_max = self.satellite.sp.F_limits[1]
         for k in range(K):
-            constraints.append(cvx.norm(U[:, k], "inf") <= F_max)
+            constraints.append(cvx.norm(U[:, k], "inf") <= F_max - 0.00)
 
         # Per–time-step trust region constraints (51g)
         for k in range(K):
@@ -1125,7 +1060,7 @@ class SatellitePlanner:
         self.problem_parameters["p_bar"].value = self.p_bar
 
         # You can comment out the line below to disable the verbose consistency check
-        self._debug_check_flow_map_consistency(self.X_bar, self.U_bar, self.p_bar)
+        # self._debug_check_flow_map_consistency(self.X_bar, self.U_bar, self.p_bar)
 
         # Centralize satellite_radius calculation for all collision checks
         satellite_radius = self.satellite_bounding_radius
@@ -1252,7 +1187,8 @@ class SatellitePlanner:
         trajectory_change = p_change + max_x_change
         converged_by_trajectory = trajectory_change < self.params.stop_crit
 
-        print(f"  Trajectory change: {trajectory_change:.6e} (threshold: {self.params.stop_crit:.6e})")
+        # DEBUG print
+        # print(f"  Trajectory change: {trajectory_change:.6e} (threshold: {self.params.stop_crit:.6e})")
 
         # Criterion 2: Relative predicted cost improvement
         merit_old = self._calculate_nonlinear_merit(self.X_bar, self.U_bar, self.p_bar)
@@ -1264,9 +1200,10 @@ class SatellitePlanner:
         if merit_old > 1e-6:
             relative_improvement = predicted_improvement / merit_old
             converged_by_cost = relative_improvement < self.params.relative_stop_crit
-            print(
-                f"  Relative predicted improvement: {relative_improvement.item():.6e} (threshold: {self.params.relative_stop_crit:.6e})"
-            )
+            # DEBUG print
+            # print(
+            #     f"  Relative predicted improvement: {relative_improvement.item():.6e} (threshold: {self.params.relative_stop_crit:.6e})"
+            # )
         else:
             converged_by_cost = False
             print(f"  Relative predicted improvement: N/A (merit_old is too small)")

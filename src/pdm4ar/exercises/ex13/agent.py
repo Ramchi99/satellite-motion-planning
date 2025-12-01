@@ -94,9 +94,9 @@ class SatelliteAgent(Agent):
         self.goal_state = init_sim_obs.goal.target
 
         # Plot docking station (this is optional, for better visualization)
-        if Config.PLOT and isinstance(init_sim_obs.goal, DockingTarget):
-            A, B, C, A1, A2, half_p_angle = init_sim_obs.goal.get_landing_constraint_points()
-            init_sim_obs.goal.plot_landing_points(A, B, C, A1, A2)
+        # if Config.PLOT and isinstance(init_sim_obs.goal, DockingTarget):
+        #     A, B, C, A1, A2, half_p_angle = init_sim_obs.goal.get_landing_constraint_points()
+        #     init_sim_obs.goal.plot_landing_points(A, B, C, A1, A2)
 
         #
         # TODO: Implement Compute Initial Trajectory
@@ -123,8 +123,8 @@ class SatelliteAgent(Agent):
         expected_state = self.state_traj.at_interp(sim_obs.time)
 
         # plotting the trajectory every 2.5 sec (this is optional, for better visualization)
-        if Config.PLOT and int(10 * sim_obs.time) % 25 == 0:
-            plot_traj(self.state_traj, self.actual_trajectory)
+        # if Config.PLOT and int(10 * sim_obs.time) % 25 == 0:
+        #     plot_traj(self.state_traj, self.actual_trajectory)
 
         #
         # TODO: Implement scheme to replan

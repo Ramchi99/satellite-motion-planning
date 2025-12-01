@@ -38,7 +38,7 @@ class SolverParameters:
     # SCVX parameters (Add paper reference)
     lambda_nu: float = 1e6  # slack variable weight
     # weight_p: NDArray = field(default_factory=lambda: 10 * np.array([[1.0]]).reshape((1, -1)))  # weight for final time
-    weight_p = 10.0
+    weight_p = 1.0
     weight_U = 1.0
 
     tr_radius: float = 5  # initial trust region radius
@@ -60,7 +60,7 @@ class SolverParameters:
     map_characteristic_dimension: float = 11.0
 
     map_edge_constr_activation_time = 5
-    dock_constr_activation_time = K - 7
+    dock_constr_activation_time = K - 5
 
     use_p_jacobian = True
 
@@ -182,9 +182,7 @@ class SatellitePlanner:
         self.p_bar = self.variables["p"].value
 
         for i in range(self.params.max_iterations):
-            print(i)
             if self.tr_radius < self.params.min_tr_radius:
-                print("tr_radius bounds exceeded")
                 break
 
             # Linearize the system about the reference trajectory
@@ -253,9 +251,8 @@ class SatellitePlanner:
 
         m = self.satellite.sp.m_v
         F_max = self.satellite.F_max
-        t_f_guess = 4 * np.sqrt(m * norm(X0[:2] - Xf[:2]) / F_max)
+        t_f_guess = 3 * np.sqrt(m * norm(X0[:2] - Xf[:2]) / F_max)
         p = np.array([t_f_guess])
-        # p = np.array([10.0])
 
         return X, U, p
 
@@ -350,6 +347,7 @@ class SatellitePlanner:
         tr_radius = self.problem_parameters["tr_radius"]
 
         # boundary conditions
+
         constraints = [
             X[:, 0] + nu_ic == init_state,
             X[:, -1] + nu_tc == goal_state,
@@ -380,7 +378,10 @@ class SatellitePlanner:
         D_max = self.params.map_characteristic_dimension - buff
         constraints.extend([cvx.norm(U[:, k], "inf") <= F_max for k in range(K)])
         # constraints.extend(
-        #     [cvx.norm(X[:2, k], "inf") <= D_max for k in range(self.params.map_edge_constr_activation_time, K)]
+        #     [
+        #         cvx.norm(X[:2, k], "inf") <= D_max
+        #         for k in range(self.params.map_edge_constr_activation_time, self.params.dock_constr_activation_time)
+        #     ]
         # )
 
         # nonconvex path constraints
@@ -413,7 +414,7 @@ class SatellitePlanner:
 
         # docking constraints
         if isinstance(self.goal, DockingTarget):
-            A, B, C, A1, A2, _ = self.goal.get_landing_constraint_points_offset()
+            A, B, C, A1, A2, _ = self.goal.get_landing_constraint_points()
 
             dock_constr_activation_time = self.params.dock_constr_activation_time
 
@@ -448,6 +449,7 @@ class SatellitePlanner:
         K = self.params.K
         n_x = self.satellite.n_x
 
+        X = self.variables["X"]
         U = self.variables["U"]
         p = self.variables["p"]
         nu = cvx.hstack([self.variables["nu"], np.zeros((n_x, 1))])
@@ -513,15 +515,13 @@ class SatellitePlanner:
 
         accepted = True
 
-        if rho < self.params.rho_0:
+        if rho <= self.params.rho_0:
             self.tr_radius /= self.params.alpha
             accepted = False
         elif rho < self.params.rho_1:
             self.tr_radius /= self.params.alpha
         elif rho >= self.params.rho_2:
             self.tr_radius *= self.params.beta
-
-        print(rho)
 
         return accepted
 

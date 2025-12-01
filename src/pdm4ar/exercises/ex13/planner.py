@@ -255,7 +255,7 @@ class SatellitePlanner:
         F_max = self.satellite.F_max
         t_f_guess = 4 * np.sqrt(m * norm(X0[:2] - Xf[:2]) / F_max)
         p = np.array([t_f_guess])
-        p = np.array([10.0])
+        # p = np.array([10.0])
 
         return X, U, p
 

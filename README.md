@@ -53,3 +53,6 @@ You can execute the planner and generate the visual logs using the built-in PDM4
 poetry run pdm4ar-exercise
 ```
 *(Note: To run specific configurations, you may need to append arguments like `ex13` depending on the course evaluation framework).*
+
+## Acknowledgements
+This codebase was developed as the final project for the **Planning and Decision Making for Autonomous Robots (PDM4AR)** master's course at **ETH Zurich** (Fall 2025). The simulation environment, physics engine, and base exercise framework were provided by the [IDSC Frazzoli Lab](https://github.com/PDM4AR). You can find the original exercise descriptions [here](https://pdm4ar.github.io/exercises/).

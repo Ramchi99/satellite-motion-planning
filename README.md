@@ -26,7 +26,14 @@ Our solver translates the highly non-linear, non-convex optimal control problem 
 
 1. **Initial Guess:** The algorithm requires a warm start. We initialized the solver with a basic kinematic straight-line interpolation and an estimated time-of-flight to serve as the first reference trajectory ($\bar{X}, \bar{U}, \bar{p}$).
 2. **Linearization & Discretization:** At each iteration, we linearize the non-linear orbital dynamics around the current reference trajectory. Using **First-Order Hold (FOH)** discretization, we compute the exact discrete-time state-space matrices ($A_k, B^-_k, B^+_k, F_k, r_k$). This turns the complex physics constraints into simple linear equalities.
-3. **Virtual Slack Variables (Guaranteed Feasibility):** Non-convex obstacle constraints (like planets/asteroids) often cause standard solvers to crash if the initial guess passes straight through them. SCvx avoids this by introducing **virtual slack variables** ($\nu$) to the dynamics and obstacle constraints. This guarantees the mathematical subproblem is *always* strictly feasible. We then heavily penalize these slacks in the objective function, forcing the solver to naturally "pull" the trajectory out of the obstacles over successive iterations.
+3. **The Non-Linear Flow Map & Virtual Slack Variables:** A major challenge in non-linear MPC is that if you integrate the true continuous physics from state $x_k$ using control $u$, you rarely end up exactly at the solver's discrete predicted state $x_{k+1}$. This physical discrepancy is known as the **defect**.
+
+<p align="center">
+  <img src="flow_map_defect.png" alt="Flow Map Defect" width="600"/>
+</p>
+
+*Standard solvers will crash if these equations don't perfectly balance. SCvx avoids this by introducing **virtual slack variables** ($\nu_k$) that explicitly absorb the defect. This guarantees the mathematical subproblem is **always strictly feasible**. We then heavily penalize these slacks in the objective function, forcing the solver to naturally close the gap and "pull" the trajectory out of the obstacles over successive iterations.*
+
 4. **Dynamic Trust Region:** To ensure our linearized equations don't diverge from the true non-linear physics, we bound the allowed update step by a Trust Region radius. After each CVXPY solve, we compute the ratio ($\rho$) of the *actual* non-linear cost reduction versus the *predicted* linear cost reduction. If the approximation was highly accurate, we expand the radius to take larger steps. If the non-linear cost worsens, we shrink the radius and reject the update.
 
 ### 🔑 The "Secret Sauce": Feed-Forward Control & Impulse Preservation

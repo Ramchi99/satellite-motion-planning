@@ -8,7 +8,7 @@ This project implements a highly optimized motion planning algorithm for a satel
 ## Visuals
 | Config 1 | Config 2 | Config 3 |
 | :---: | :---: | :---: |
-| <img src="animation_1.gif" width="300" /> | <img src="animation_2.gif" width="300" /> | <img src="animation_3.gif" width="300" /> |
+| <img src="animation_1.gif" width="100%" /> | <img src="animation_2.gif" width="100%" /> | <img src="animation_3.gif" width="100%" /> |
 
 ## The Problem
 * **Objective:** Navigate a satellite through a constrained space (docking bay) to a target while adhering to non-linear orbital dynamics and strict control limits.
